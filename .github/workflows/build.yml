@@ -15,9 +15,19 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Test geometry and compile ARM64 extension
         run: bash scripts/build.sh
+      - name: Verify toolbar lifecycle in iPad simulator
+        run: bash scripts/test_ui.sh
       - uses: actions/upload-artifact@v4
         with:
           name: ProcreateRulers-arm64
           path: build/ProcreateRulers.dylib
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Toolbar-UIKit-test
+          path: |
+            build/toolbar-test.json
+            build/toolbar-harness.png
+          if-no-files-found: warn

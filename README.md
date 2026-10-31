@@ -4,9 +4,13 @@ Original extension code; no Procreate executable, artwork, extracted resources o
 
 ## What is implemented
 
-Floating screen-space straight ruler, 90° and 45° guides, circle, ellipse, quadratic curve and angle guide. Drag the blue center with a finger; use angle and size sliders. Choose the drawing surface explicitly with **Scegli tela**, then enable **Aggancio**. Only Apple Pencil location queries on the chosen view are constrained. Finger gestures, pressure, inclination and timestamps are not modified. Both ordinary and precise current/previous UITouch position methods are intercepted.
+Two icon buttons are placed immediately after the native **Transform** control: **Righello** (ruler icon) and **Simmetria** (split square). Their positions follow the actual native Transform control rather than fixed screen coordinates. They appear in the document editor, not the Gallery. A narrow window with insufficient space hides the buttons instead of covering native tools.
 
-Symmetry uses Procreate's existing native drawing guides; this extension does not add or replace the native symmetry engine. Activate symmetry through Procreate's guide controls. Combined ruler/symmetry behavior is unverified.
+**Righello** opens screen-space straight ruler, 90° and 45° guides, circle, ellipse, quadratic curve and angle guide. Drag the blue center with a finger; use angle and size sliders. Choose the drawing surface explicitly with **Scegli tela**, then enable **Aggancio**. Only Apple Pencil location queries on the chosen view are constrained. Finger gestures, pressure, inclination and timestamps are not modified. Both ordinary and precise current/previous UITouch position methods are intercepted. Press Righello again to turn the overlay and snapping off.
+
+**Simmetria** opens the native guide editor and switches its guide type to symmetry, through the model/controller methods found in the analyzed build. The native type-change checkpoint records undo; the original native options and Done/Cancel controls remain in charge of editing and assistance. This bridge does not replace the symmetry engine. Unsupported runtime methods show an explicit fallback message instead of silently pretending to activate symmetry. The native type value (3) was verified in the supplied executable's `symmetryStrokes` instructions; runtime behavior in real Procreate still requires device testing.
+
+Startup accepts a changed signing bundle identifier and supports both scene-based and legacy UIKit windows. A timer retries attachment after startup and document transitions; the toolbar is hidden when the native document/Transform control cannot be found.
 
 ## Status and limitations
 
@@ -16,7 +20,7 @@ Designed against the supplied Procreate 5.4.8/build 57066 ARM64 package. Compati
 
 ## Build
 
-GitHub Actions uses a macOS runner with the iPhoneOS SDK, runs C geometry tests, builds an ARM64 dylib and uploads it as an artifact. The ad-hoc signature permits packaging; it is not a device installation signature.
+GitHub Actions uses a macOS runner with the iPhoneOS SDK, runs C geometry and Python packaging tests, builds an ARM64 dylib and runs a UIKit integration harness in an iPad simulator. The harness checks changed bundle IDs, legacy windows, button placement, ruler open/close and the native bridge selector sequence using explicit test doubles. Its screenshot is labeled as a test environment. These checks do **not** execute real Procreate or prove its input pipeline works. The ad-hoc signature permits packaging; it is not a device installation signature.
 
 Locally on macOS: `bash scripts/build.sh`.
 
