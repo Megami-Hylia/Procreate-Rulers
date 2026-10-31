@@ -5,7 +5,7 @@ sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 arch="$(uname -m)"
 mkdir -p build/ToolbarHarness.app
 xcrun --sdk iphonesimulator clang -arch "$arch" -isysroot "$sdk" -mios-simulator-version-min=16.3 \
-  -fobjc-arc -fmodules -O1 -Wall -Wextra -Wno-unused-parameter \
+  -fobjc-arc -fmodules -DPR_TESTING=1 -O1 -Wall -Wextra -Wno-unused-parameter \
   tests/ToolbarHarness.m src/Rulers.m -framework UIKit -framework Foundation \
   -o build/ToolbarHarness.app/Procreate
 python3 - <<'PY'
