@@ -11,6 +11,8 @@ xcrun --sdk iphonesimulator clang -arch "$arch" -isysroot "$sdk" -mios-simulator
 python3 - <<'PY'
 import plistlib,pathlib
 p={'CFBundleIdentifier':'test.megamihylia.rulers.resigned','CFBundleExecutable':'Procreate','CFBundleName':'ToolbarHarness','CFBundlePackageType':'APPL','CFBundleVersion':'2','CFBundleShortVersionString':'0.2','MinimumOSVersion':'16.3','UIDeviceFamily':[2],'UILaunchScreen':{}}
+p['UISupportedInterfaceOrientations']=['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']
+p['UIRequiresFullScreen']=True
 pathlib.Path('build/ToolbarHarness.app/Info.plist').write_bytes(plistlib.dumps(p))
 PY
 codesign --force --sign - build/ToolbarHarness.app

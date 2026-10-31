@@ -15,6 +15,16 @@
 @end
 @implementation PRTestDocument
 @end
+@interface PRTestEngineController : NSObject
+@property(nonatomic,strong) PRTestDocument *document;
+@property(nonatomic) BOOL enabled;
+- (void)drawingGuideEnabled:(BOOL)enabled;
+- (void)drawingGuideTypeChanged:(NSInteger)type;
+@end
+@implementation PRTestEngineController
+- (void)drawingGuideEnabled:(BOOL)enabled {_enabled=enabled;if(!_document.drawingGuide)_document.drawingGuide=[ValkyrieDrawingGuide new];}
+- (void)drawingGuideTypeChanged:(NSInteger)type {_document.drawingGuide.type=type;[_document.drawingGuide updateSegments];}
+@end
 @interface PRTestCheckpoint : NSObject
 @property(nonatomic) NSInteger startedType;
 @property(nonatomic) BOOL finished;
@@ -28,6 +38,7 @@
 @interface PRTestModel : NSObject
 @property(nonatomic,strong) PRTestDocument *document;
 @property(nonatomic,strong) PRTestCheckpoint *drawingGuideController;
+@property(nonatomic,strong) PRTestEngineController *valkyrieController;
 @property(nonatomic) BOOL began, refreshed;
 - (void)beginDrawingGuideMode;
 - (void)updateInterface;
@@ -42,7 +53,8 @@
 @implementation DocumentViewController
 - (void)viewDidLoad {
     [super viewDidLoad];self.view.backgroundColor=[UIColor colorWithWhite:.92 alpha:1];
-    _modelController=[PRTestModel new];_modelController.document=[PRTestDocument new];_modelController.document.drawingGuide=[ValkyrieDrawingGuide new];_modelController.drawingGuideController=[PRTestCheckpoint new];
+    _modelController=[PRTestModel new];_modelController.document=[PRTestDocument new];_modelController.drawingGuideController=[PRTestCheckpoint new];
+    _modelController.valkyrieController=[PRTestEngineController new];_modelController.valkyrieController.document=_modelController.document;
     UIView *bar=[[UIView alloc]initWithFrame:CGRectMake(0,24,self.view.bounds.size.width,48)];bar.backgroundColor=[UIColor colorWithWhite:.14 alpha:1];bar.autoresizingMask=UIViewAutoresizingFlexibleWidth;[self.view addSubview:bar];
     NSArray *titles=@[@"Gallery",@"Actions",@"Adjust",@"Select",@"Transform"];
     NSArray *symbols=@[@"",@"wrench",@"wand.and.stars",@"s.circle",@"arrow.up.right"];
@@ -81,7 +93,7 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             if(![[layer valueForKey:@"guideVisible"] boolValue] || [[layer valueForKey:@"panel"] isHidden])[failures addObject:@"Ruler does not open its panel"];
             [symmetry sendActionsForControlEvents:UIControlEventTouchUpInside];
             PRTestModel *model=((DocumentViewController *)self.window.rootViewController).modelController;
-            if(!model.began || model.document.drawingGuide.type!=3 || !model.document.drawingGuide.updated || !model.drawingGuideController.finished || !model.refreshed)[failures addObject:@"Native symmetry bridge did not execute its validated selector sequence"];
+            if(!model.valkyrieController.enabled || !model.began || model.document.drawingGuide.type!=3 || !model.document.drawingGuide.updated || !model.drawingGuideController.finished || !model.refreshed)[failures addObject:@"Native symmetry bridge did not create/enable a guide and execute its validated selector sequence"];
             if([[layer valueForKey:@"guideVisible"] boolValue])[failures addObject:@"Ruler remains active over the native symmetry editor"];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];

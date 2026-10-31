@@ -38,6 +38,14 @@ static BOOL nativeInteger(id object, NSString *name, NSInteger value) {
     if(type[0]!='Q' && type[0]!='q')return NO;
     ((void (*)(id,SEL,NSInteger))[object methodForSelector:selector])(object,selector,value);return YES;
 }
+static BOOL nativeBool(id object, NSString *name, BOOL value) {
+    SEL selector=NSSelectorFromString(name);
+    NSMethodSignature *signature=[object methodSignatureForSelector:selector];
+    if(!signature || signature.numberOfArguments!=3 || signature.methodReturnType[0]!='v')return NO;
+    const char *type=[signature getArgumentTypeAtIndex:2];
+    if(type[0]!='B' && type[0]!='c')return NO;
+    ((void (*)(id,SEL,BOOL))[object methodForSelector:selector])(object,selector,value);return YES;
+}
 static UIViewController *findDocument(UIViewController *controller) {
     if(!controller)return nil;
     Class documentClass=NSClassFromString(@"DocumentViewController");
@@ -129,7 +137,7 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
         if(![candidate isKindOfClass:UIView.class] || !((UIView *)candidate).window)candidate=nativeObject(toolbar,@"transformButtonCompact");
         if([candidate isKindOfClass:UIView.class] && ((UIView *)candidate).window)_transformButton=candidate;
     }
-    BOOL visible=document && _transformButton.window && !_transformButton.hidden && _transformButton.alpha>.01;
+    BOOL visible=document && !document.presentedViewController && _transformButton.window && !_transformButton.hidden && _transformButton.alpha>.01;
     _rulerButton.hidden=!visible;_symmetryButton.hidden=!visible;
     if(!visible){_snap=NO;_selecting=NO;_panel.hidden=YES;_guideVisible=NO;[self setNeedsDisplay];return;}
     CGRect anchor=[_transformButton convertRect:_transformButton.bounds toView:self];
@@ -150,8 +158,10 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
     _panel.hidden=YES;_guideVisible=NO;_snap=NO;_selecting=NO;
     _rulerButton.tintColor=[UIColor colorWithWhite:.76 alpha:1];[_snapButton setTitle:@"Aggancio OFF" forState:0];[self setNeedsDisplay];
     id model=nativeObject(_documentController,@"modelController");
-    id document=nativeObject(model,@"document");
-    id guide=nativeObject(document,@"drawingGuide");
+    id engineController=nativeObject(model,@"valkyrieController");
+    // The native enable command also creates the default guide for a fresh canvas.
+    if(!nativeBool(engineController,@"drawingGuideEnabled:",YES)){[self showNativeError];return;}
+    id guide=nativeObject(nativeObject(model,@"document"),@"drawingGuide");
     // Confirmed in the supplied build: guide type 3 is symmetry (symmetryStrokes).
     if(!guide || ![guide isKindOfClass:NSClassFromString(@"ValkyrieDrawingGuide")] || !nativeVoid(model,@"beginDrawingGuideMode")){
         [self showNativeError];return;
@@ -159,11 +169,9 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
     id controller=nativeObject(model,@"drawingGuideController");
     // beginDrawingGuideMode may replace state: reacquire the current guide.
     guide=nativeObject(nativeObject(model,@"document"),@"drawingGuide");
-    NSMethodSignature *setter=[guide methodSignatureForSelector:NSSelectorFromString(@"setType:")];
-    if(!controller || !setter || ![controller respondsToSelector:NSSelectorFromString(@"finishCheckpoint")]){[self showNativeError];return;}
+    if(!controller || ![engineController respondsToSelector:NSSelectorFromString(@"drawingGuideTypeChanged:")] || ![controller respondsToSelector:NSSelectorFromString(@"finishCheckpoint")]){[self showNativeError];return;}
     if(!nativeInteger(controller,@"beginGuideTypeChangedCheckpoint:",3)){[self showNativeError];return;}
-    BOOL changed=nativeInteger(guide,@"setType:",3);
-    if(changed)nativeVoid(guide,@"updateSegments");
+    BOOL changed=nativeInteger(engineController,@"drawingGuideTypeChanged:",3);
     nativeVoid(controller,@"finishCheckpoint");nativeVoid(model,@"updateInterface");
     if(!changed)[self showNativeError];
 }
