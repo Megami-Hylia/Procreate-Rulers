@@ -1,0 +1,23 @@
+name: Build iOS ruler extension
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test IPA packager
+        run: python3 -m unittest discover -s tests -v
+      - name: Test geometry and compile ARM64 extension
+        run: bash scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProcreateRulers-arm64
+          path: build/ProcreateRulers.dylib
+          if-no-files-found: error
+          retention-days: 14

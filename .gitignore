@@ -1,0 +1,5 @@
+build/
+*.ipa
+*.p12
+*.mobileprovision
+__pycache__/
