@@ -1,12 +1,12 @@
 # Procreate Rulers
 
-Experimental original extension for the supplied Procreate 5.4.8/build 57066 IPA. The v5 correction follows a reference video showing that earlier visible guides did not constrain actual painting. See [the failure and verified native call path](docs/Video-correction.md).
+Experimental original extension for the supplied Procreate 5.4.8/build 57066 IPA. The v5 correction follows a reference video showing that earlier visible guides did not constrain actual painting. The v6 correction addresses cross-arc chords and touch routing observed in the follow-up video. See [the native call path](docs/Video-correction.md) and [the v6 regression](docs/Video-v6-correction.md).
 
 ## Rulers
 
-The toolbar's Righello button opens two choices: Dritto and Flessibile. Native painting samples are constrained to the displayed path through Procreate's own coordinate conversions. The extension no longer intercepts UIKit UITouch methods or relies on selecting a guessed input view. The visible status counts native control points actually projected. If it remains zero while painting, the real-app path still needs diagnosis; a visible guide alone is not proof of a working constraint.
+The toolbar's Righello button opens two choices: Dritto and Flessibile. Native painting samples are constrained to the displayed path through Procreate's own coordinate conversions. Flexible input intervals are subdivided along the actual arc, including reversals and endpoint-to-endpoint jumps, rather than leaving the brush to join two distant projected endpoints. Repeated overlapping batches retain contiguous deterministic sample IDs. The extension does not intercept global UIKit UITouch methods or rely on selecting a guessed input view.
 
-The normal ruler has two endpoint handles to pivot/resize it. The flexible ruler has three handles directly on its curve: two ends and a bend point. Drag any point to reshape it; drag the translucent body to move the whole guide. Two fingers rotate/pinch-scale it, with cardinal-angle snapping. Double-tap its body to reset, or a flexible handle to fit the current curve into the view. Blocca disables finger manipulation. Press the toolbar icon again for free drawing.
+The normal ruler has two endpoint handles to pivot/resize it. The flexible ruler has three handles directly on its curve: two ends and a bend point. Drag any handle with a finger or Pencil to reshape it; drag the translucent body with a finger to move the whole guide. Pencil strokes on the body pass through to painting. Two fingers rotate/pinch-scale it, with cardinal-angle snapping. Double-tap its body to reset, or a flexible handle to fit the current curve into the view. Blocca disables guide manipulation. Native controls such as Undo and brush sliders take priority over the guide. Press the toolbar icon again for free drawing.
 
 The interface uses a compact selector and neutral translucent ruler bodies, matching the interaction shown in the reference rather than an external cubic editing scaffold.
 

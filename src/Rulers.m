@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include <string.h>
+#include <stdint.h>
 #import "Geometry.h"
 
 @interface PRLayer : UIView <UIGestureRecognizerDelegate>
@@ -79,6 +80,8 @@ static BOOL pointConverter(id object,SEL selector) {
     NSMethodSignature *s=[object methodSignatureForSelector:selector];
     return s && s.numberOfArguments==3 && strcmp(s.methodReturnType,@encode(CGPoint))==0 && strcmp([s getArgumentTypeAtIndex:2],@encode(CGPoint))==0;
 }
+// Fixed subdivision preserves contiguous, repeatable IDs in overlapping native batches.
+enum { PRCurveSteps=16 };
 static id projectNativePoints(id receiver,id points) {
     PRLayer *layer=activeLayer;
     if(!NSThread.isMainThread || !layer.guideVisible || !layer.snap || !layer.window || ![points isKindOfClass:NSArray.class] || ![points count])return points;
@@ -94,26 +97,63 @@ static id projectNativePoints(id receiver,id points) {
     if(!pointConverter(engine,toView) || !pointConverter(engine,toDocument))return points;
     Class pointClass=NSClassFromString(@"ValkyrieStrokeSegmentPoint");
     if(!pointClass)return points;
+    NSMethodSignature *get=[pointClass instanceMethodSignatureForSelector:@selector(location)];
+    NSMethodSignature *set=[pointClass instanceMethodSignatureForSelector:@selector(setLocation:)];
+    if(!get || get.numberOfArguments!=2 || strcmp(get.methodReturnType,@encode(CGPoint)) || !set || set.numberOfArguments!=3 || strcmp(set.methodReturnType,"v") || strcmp([set getArgumentTypeAtIndex:2],@encode(CGPoint)))return points;
     CGPoint (*viewPoint)(id,SEL,CGPoint)=(void *)[engine methodForSelector:toView];
     CGPoint (*documentPoint)(id,SEL,CGPoint)=(void *)[engine methodForSelector:toDocument];
+    CGPoint (*location)(id,SEL)=(void *)[pointClass instanceMethodForSelector:@selector(location)];
+    void (*setLocation)(id,SEL,CGPoint)=(void *)[pointClass instanceMethodForSelector:@selector(setLocation:)];
+    SEL indexSelector=NSSelectorFromString(@"index"),setIndexSelector=NSSelectorFromString(@"setIndex:");
+    unsigned int (*indexOf)(id,SEL)=NULL;void (*setIndex)(id,SEL,unsigned int)=NULL;
+    PRGuide guide=layer.guide;
+    if(guide.kind==PRFlexible){
+        NSMethodSignature *a=[pointClass instanceMethodSignatureForSelector:indexSelector],*b=[pointClass instanceMethodSignatureForSelector:setIndexSelector];
+        if(!a || a.numberOfArguments!=2 || strcmp(a.methodReturnType,@encode(unsigned int)) || !b || b.numberOfArguments!=3 || strcmp(b.methodReturnType,"v") || strcmp([b getArgumentTypeAtIndex:2],@encode(unsigned int)))return points;
+        indexOf=(void *)[pointClass instanceMethodForSelector:indexSelector];setIndex=(void *)[pointClass instanceMethodForSelector:setIndexSelector];
+        unsigned int previous=0;BOOL first=YES;
+        for(id sample in points){
+            if(![sample isKindOfClass:pointClass])return points;
+            unsigned int index=indexOf(sample,indexSelector);
+            if(index>UINT32_MAX/PRCurveSteps || (!first && index!=previous+1))return points;
+            previous=index;first=NO;
+        }
+    }
+    // Synthetic points interpolate brush dynamics; the original endpoint is copied intact.
+    NSString *fields[] = {@"pressure",@"altitude",@"azimuth",@"timeInterval",@"size",@"opacity",@"absoluteRollAngle",@"relativeRollAngle"};
+    SEL getters[8],setters[8];double (*read[8])(id,SEL);void (*write[8])(id,SEL,double);
+    for(int i=0;i<8;i++){
+        getters[i]=NSSelectorFromString(fields[i]);NSString *name=fields[i];
+        setters[i]=NSSelectorFromString([NSString stringWithFormat:@"set%@%@:",[[name substringToIndex:1] uppercaseString],[name substringFromIndex:1]]);
+        NSMethodSignature *a=[pointClass instanceMethodSignatureForSelector:getters[i]],*b=[pointClass instanceMethodSignatureForSelector:setters[i]];
+        BOOL valid=a && a.numberOfArguments==2 && !strcmp(a.methodReturnType,"d") && b && b.numberOfArguments==3 && !strcmp(b.methodReturnType,"v") && !strcmp([b getArgumentTypeAtIndex:2],"d");
+        read[i]=valid?(void *)[pointClass instanceMethodForSelector:getters[i]]:NULL;write[i]=valid?(void *)[pointClass instanceMethodForSelector:setters[i]]:NULL;
+    }
     NSMutableArray *projected=[NSMutableArray arrayWithCapacity:[points count]];
-    PRGuide guide=layer.guide;NSUInteger changed=0;
+    NSUInteger changed=0;id previousSample=nil;double previousT=0;
     for(id sample in points){
         if(![sample isKindOfClass:pointClass]){[projected addObject:sample];continue;}
-        NSMethodSignature *get=[sample methodSignatureForSelector:@selector(location)];
-        NSMethodSignature *set=[sample methodSignatureForSelector:@selector(setLocation:)];
-        if(!get || get.numberOfArguments!=2 || strcmp(get.methodReturnType,@encode(CGPoint)) || !set || set.numberOfArguments!=3 || strcmp(set.methodReturnType,"v") || strcmp([set getArgumentTypeAtIndex:2],@encode(CGPoint))){[projected addObject:sample];continue;}
-        CGPoint (*location)(id,SEL)=(void *)[sample methodForSelector:@selector(location)];
         CGPoint point=viewPoint(engine,toView,location(sample,@selector(location)));
         point=[source convertPoint:point toView:layer];
-        PRPoint constrained=pr_project((PRPoint){point.x,point.y},guide);
-        point=[layer convertPoint:CGPointMake(constrained.x,constrained.y) toView:source];
-        point=documentPoint(engine,toDocument,point);
-        if(!isfinite(point.x) || !isfinite(point.y)){[projected addObject:sample];continue;}
-        id copy=[sample copy];
-        void (*setLocation)(id,SEL,CGPoint)=(void *)[copy methodForSelector:@selector(setLocation:)];
-        setLocation(copy,@selector(setLocation:),point);
-        [projected addObject:copy];changed++;
+        if(!isfinite(point.x) || !isfinite(point.y))return points;
+        double t=guide.kind==PRFlexible?pr_curve_parameter((PRPoint){point.x,point.y},guide):0;
+        int steps=guide.kind==PRFlexible && previousSample?PRCurveSteps:1;
+        double before[8]={0},after[8]={0};
+        if(steps>1)for(int i=0;i<8;i++)if(read[i]){before[i]=read[i](previousSample,getters[i]);after[i]=read[i](sample,getters[i]);}
+        for(int j=1;j<=steps;j++){
+            double f=j/(double)steps;
+            PRPoint constrained=guide.kind==PRFlexible?pr_world(pr_curve(previousSample?previousT+(t-previousT)*f:t,guide),guide):pr_project((PRPoint){point.x,point.y},guide);
+            CGPoint value=[layer convertPoint:CGPointMake(constrained.x,constrained.y) toView:source];value=documentPoint(engine,toDocument,value);
+            if(!isfinite(value.x) || !isfinite(value.y))return points;
+            id copy=[sample copy];setLocation(copy,@selector(setLocation:),value);
+            if(guide.kind==PRFlexible){
+                unsigned int index=indexOf(sample,indexSelector)*PRCurveSteps;
+                setIndex(copy,setIndexSelector,index-(steps-j));
+                if(j<steps)for(int i=0;i<8;i++)if(write[i])write[i](copy,setters[i],before[i]+(after[i]-before[i])*f);
+            }
+            [projected addObject:copy];
+        }
+        previousSample=sample;previousT=t;changed++;
     }
     layer.nativeSamples+=changed;return projected;
 }
@@ -161,7 +201,7 @@ static void installNativeInputHook(void) {
     [row addArrangedSubview:[self button:@"Adatta" action:@selector(fitRuler)]];
     _lockButton=[self button:@"Blocca" action:@selector(toggleLock:)];[row addArrangedSubview:_lockButton];[stack addArrangedSubview:row];
     _status=[UILabel new];_status.font=[UIFont systemFontOfSize:11];_status.textColor=UIColor.whiteColor;_status.numberOfLines=1;[stack addArrangedSubview:_status];
-    UIPanGestureRecognizer *pan=[[UIPanGestureRecognizer alloc]initWithTarget:self action:@selector(move:)];pan.allowedTouchTypes=@[@(UITouchTypeDirect)];pan.maximumNumberOfTouches=1;pan.delegate=self;[self addGestureRecognizer:pan];
+    UIPanGestureRecognizer *pan=[[UIPanGestureRecognizer alloc]initWithTarget:self action:@selector(move:)];pan.allowedTouchTypes=@[@(UITouchTypeDirect),@(UITouchTypePencil)];pan.maximumNumberOfTouches=1;pan.delegate=self;[self addGestureRecognizer:pan];
     UIRotationGestureRecognizer *rotate=[[UIRotationGestureRecognizer alloc]initWithTarget:self action:@selector(rotateRuler:)];rotate.delegate=self;rotate.allowedTouchTypes=@[@(UITouchTypeDirect)];[self addGestureRecognizer:rotate];
     UIPinchGestureRecognizer *pinch=[[UIPinchGestureRecognizer alloc]initWithTarget:self action:@selector(scaleRuler:)];pinch.delegate=self;pinch.allowedTouchTypes=@[@(UITouchTypeDirect)];[self addGestureRecognizer:pinch];
     UITapGestureRecognizer *reset=[[UITapGestureRecognizer alloc]initWithTarget:self action:@selector(doubleTapRuler:)];reset.numberOfTapsRequired=2;reset.allowedTouchTypes=@[@(UITouchTypeDirect)];reset.delegate=self;[self addGestureRecognizer:reset];
@@ -251,13 +291,24 @@ static void installNativeInputHook(void) {
     UIView *hit=[super hitTest:p withEvent:event];
     if(hit!=self)return hit;
     if(_selecting)return self;
-    BOOL pencil=NO;for(UITouch *touch in event.allTouches)if(touch.type==UITouchTypePencil)pencil=YES;
-    if(_guideVisible && !_rulerLocked && !pencil && [self handleAtPoint:p]>=0)return self;
+    // The guide must never steal Undo, brush sliders or other native controls.
+    UIView *documentView=_documentController.view;
+    UIView *under=[documentView hitTest:[self convertPoint:p toView:documentView] withEvent:event];
+    for(UIView *view=under;view;view=view.superview)if([view isKindOfClass:UIControl.class])return nil;
+    NSInteger handle=[self handleAtPoint:p];
+    UITouch *nearest=nil;CGFloat distance=CGFLOAT_MAX;
+    for(UITouch *touch in event.allTouches){
+        if(touch.phase==UITouchPhaseEnded || touch.phase==UITouchPhaseCancelled)continue;
+        CGPoint q=[touch locationInView:self];CGFloat d=hypot(q.x-p.x,q.y-p.y);
+        if(d<distance){nearest=touch;distance=d;}
+    }
+    BOOL pencil=nearest.type==UITouchTypePencil;
+    if(_guideVisible && !_rulerLocked && handle>=0 && (!pencil || handle<3))return self;
     return nil;
 }
 - (void)updateRulerStatus {
     if(!nativeHookReady || !_snap){_status.text=@"Collegamento al disegno non disponibile";return;}
-    _status.text=_nativeSamples ? [NSString stringWithFormat:@"Punti del tratto agganciati: %lu",(unsigned long)_nativeSamples] : @"Guida pronta · disegna sulla tela";
+    _status.text=@"Tratto vincolato · sposta i cerchi per regolare";
 }
 - (void)kind:(UISegmentedControl *)s {_guide.kind=s.selectedSegmentIndex==0?PRLine:PRFlexible;[self updateRulerStatus];[self setNeedsDisplay];}
 - (NSInteger)handleAtPoint:(CGPoint)point {
@@ -271,7 +322,8 @@ static void installNativeInputHook(void) {
     return best;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
-    return _guideVisible && !_rulerLocked && !_selecting && touch.type==UITouchTypeDirect && touch.view==self && [self handleAtPoint:[touch locationInView:self]]>=0;
+    NSInteger handle=[self handleAtPoint:[touch locationInView:self]];
+    return _guideVisible && !_rulerLocked && !_selecting && touch.view==self && handle>=0 && (touch.type==UITouchTypeDirect || (touch.type==UITouchTypePencil && handle<3));
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)a shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
     return ([a isKindOfClass:UIRotationGestureRecognizer.class] && [b isKindOfClass:UIPinchGestureRecognizer.class]) || ([b isKindOfClass:UIRotationGestureRecognizer.class] && [a isKindOfClass:UIPinchGestureRecognizer.class]);

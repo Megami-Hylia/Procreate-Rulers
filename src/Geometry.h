@@ -46,9 +46,8 @@ static inline void pr_move_handle(PRGuide *g,int index,PRPoint world) {
     PRPoint local=pr_local(world,*g);double radius=fmax(1,g->radius);
     g->points[index]=(PRPoint){local.x/radius,local.y/radius};
 }
-static inline PRPoint pr_project(PRPoint world,PRGuide g) {
+static inline double pr_curve_parameter(PRPoint world,PRGuide g) {
     PRPoint q=pr_local(world,g);
-    if(g.kind==PRLine)return pr_world((PRPoint){q.x,0},g);
     double best=INFINITY,bt=0;
     for(int i=0;i<=128;i++) {
         double t=i/128.,d=pr_distance2(q,pr_curve(t,g));
@@ -59,9 +58,13 @@ static inline PRPoint pr_project(PRPoint world,PRGuide g) {
         double t1=lo+(hi-lo)/3,t2=hi-(hi-lo)/3;
         if(pr_distance2(q,pr_curve(t1,g))<pr_distance2(q,pr_curve(t2,g)))hi=t2;else lo=t1;
     }
-    PRPoint p=pr_curve((lo+hi)/2,g);
-    for(int i=0;i<2;i++){PRPoint end=pr_curve(i,g);if(pr_distance2(q,end)<pr_distance2(q,p))p=end;}
-    return pr_world(p,g);
+    double t=(lo+hi)/2;PRPoint p=pr_curve(t,g);
+    for(int i=0;i<2;i++){PRPoint end=pr_curve(i,g);if(pr_distance2(q,end)<pr_distance2(q,p)){p=end;t=i;}}
+    return t;
+}
+static inline PRPoint pr_project(PRPoint world,PRGuide g) {
+    if(g.kind==PRLine){PRPoint q=pr_local(world,g);return pr_world((PRPoint){q.x,0},g);}
+    return pr_world(pr_curve(pr_curve_parameter(world,g),g),g);
 }
 static inline double pr_snap_angle(double angle) {
     double cardinal=round(angle/(M_PI/2))*(M_PI/2);

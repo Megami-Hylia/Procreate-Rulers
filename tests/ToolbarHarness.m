@@ -7,14 +7,31 @@
 - (void)moveHandleAtIndex:(NSInteger)index toPoint:(CGPoint)point;
 @end
 @interface ValkyrieStrokeSegmentPoint : NSObject <NSCopying>
+@property(nonatomic) unsigned int index;
 @property(nonatomic) CGPoint location;
 @property(nonatomic) double pressure,altitude,azimuth,timeInterval;
+@property(nonatomic) double size,opacity,absoluteRollAngle,relativeRollAngle;
 @property(nonatomic) BOOL predicted;
 @end
 @implementation ValkyrieStrokeSegmentPoint
 - (id)copyWithZone:(NSZone *)zone {
-    ValkyrieStrokeSegmentPoint *p=[ValkyrieStrokeSegmentPoint new];p.location=_location;p.pressure=_pressure;p.altitude=_altitude;p.azimuth=_azimuth;p.timeInterval=_timeInterval;p.predicted=_predicted;return p;
+    ValkyrieStrokeSegmentPoint *p=[ValkyrieStrokeSegmentPoint new];p.index=_index;p.location=_location;p.pressure=_pressure;p.altitude=_altitude;p.azimuth=_azimuth;p.timeInterval=_timeInterval;p.predicted=_predicted;p.size=_size;p.opacity=_opacity;p.absoluteRollAngle=_absoluteRollAngle;p.relativeRollAngle=_relativeRollAngle;return p;
 }
+@end
+@interface PRTestTouch : UITouch
+@property(nonatomic) CGPoint testLocation;
+@property(nonatomic) UITouchType testType;
+@end
+@implementation PRTestTouch
+- (CGPoint)locationInView:(UIView *)view {return _testLocation;}
+- (UITouchType)type {return _testType;}
+- (UITouchPhase)phase {return UITouchPhaseBegan;}
+@end
+@interface PRTestEvent : UIEvent
+@property(nonatomic,strong) NSSet *testTouches;
+@end
+@implementation PRTestEvent
+- (NSSet *)allTouches {return _testTouches;}
 @end
 @interface ValkyrieDrawingGuide : NSObject
 @property(nonatomic) NSUInteger type;
@@ -150,7 +167,7 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
                 ValkyrieStrokeSegmentPoint *point=[ValkyrieStrokeSegmentPoint new];
                 CGPoint screen=CGPointMake(guide.center.x-160+i*10,guide.center.y+sin(i)*45+50);
                 point.location=[engine valkyriePointFromViewPoint:[layer convertPoint:screen toView:canvas]];
-                point.pressure=.2+i*.02;point.altitude=.8;point.azimuth=.4;point.timeInterval=i*.004;point.predicted=i>=25;[rawBatch addObject:point];
+                point.index=i;point.pressure=.2+i*.02;point.altitude=.8;point.azimuth=.4;point.timeInterval=i*.004;point.predicted=i>=25;[rawBatch addObject:point];
             }
             NSArray *nativeResult=[input constrainedControlPoints:rawBatch initialLocationInView:CGPointZero];
             if(input.originalCalls!=1 || nativeResult==rawBatch || nativeResult.count!=rawBatch.count)[failures addObject:@"Native runtime hook was not invoked around the original method"];
@@ -170,6 +187,53 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
                 for(int j=0;j<=10000;j++)nearest=fmin(nearest,pr_distance2((PRPoint){screen.x,screen.y},pr_world(pr_curve(j/10000.,guide),guide)));
                 if(nearest>.01){[failures addObject:@"Native samples escape the edited flexible guide"];break;}
             }
+            // Regression from the device video: on-curve endpoints alone still draw a chord.
+            NSMutableArray *sparse=[NSMutableArray array];
+            for(int i=0;i<2;i++){
+                ValkyrieStrokeSegmentPoint *p=[ValkyrieStrokeSegmentPoint new];PRPoint screen=pr_handle(i?2:0,guide);
+                p.location=[engine valkyriePointFromViewPoint:[layer convertPoint:CGPointMake(screen.x,screen.y) toView:canvas]];
+                p.index=i;p.timeInterval=i*.1;p.pressure=.2+i*.6;p.opacity=.6;p.size=8;p.predicted=i==1;[sparse addObject:p];
+            }
+            NSArray *sweep=[input constrainedControlPoints:sparse initialLocationInView:CGPointZero];
+            if(sweep.count<17)[failures addObject:@"Sparse curve sweep has no intermediate arc samples"];
+            for(NSUInteger i=0;i<sweep.count;i++){
+                ValkyrieStrokeSegmentPoint *p=sweep[i];double f=i/(double)(sweep.count-1);
+                if(p.index!=i || fabs(p.timeInterval-.1*f)>.000001 || fabs(p.pressure-(.2+.6*f))>.000001 || p.size!=8 || p.opacity!=.6)[failures addObject:@"Arc resampling lost contiguous indices, timing, pressure, size or opacity"];
+                if(i){
+                    ValkyrieStrokeSegmentPoint *prev=sweep[i-1];
+                    CGPoint a=[canvas convertPoint:[engine viewPointFromValkyriePoint:prev.location] toView:layer],b=[canvas convertPoint:[engine viewPointFromValkyriePoint:p.location] toView:layer];
+                    for(int j=0;j<=4;j++){
+                        PRPoint between={a.x+(b.x-a.x)*j/4.,a.y+(b.y-a.y)*j/4.};
+                        if(pr_distance2(between,pr_project(between,guide))>1)[failures addObject:@"Rendered connection cuts across the arc instead of following it"];
+                    }
+                }
+            }
+            NSArray *replay=[input constrainedControlPoints:sparse initialLocationInView:CGPointZero];
+            if(replay.count!=sweep.count)[failures addObject:@"Repeated native batch changed subdivision count"];
+            for(NSUInteger i=0;i<MIN(replay.count,sweep.count);i++){
+                ValkyrieStrokeSegmentPoint *a=replay[i],*b=sweep[i];
+                if(a.index!=b.index || !CGPointEqualToPoint(a.location,b.location))[failures addObject:@"Repeated native batch changed stable sample IDs or locations"];
+            }
+            ValkyrieStrokeSegmentPoint *last=sparse.lastObject;last.index=5;
+            if([input constrainedControlPoints:sparse initialLocationInView:CGPointZero]!=sparse)[failures addObject:@"Unsupported native index gaps were expanded unsafely"];
+            last.index=1;
+            PRTestTouch *pencil=[PRTestTouch new],*finger=[PRTestTouch new];pencil.testType=UITouchTypePencil;finger.testType=UITouchTypeDirect;
+            PRPoint handle=pr_handle(0,guide),body=pr_world(pr_curve(.25,guide),guide);
+            pencil.testLocation=CGPointMake(handle.x,handle.y);
+            PRTestEvent *event=[PRTestEvent new];event.testTouches=[NSSet setWithObject:pencil];
+            if([layer hitTest:pencil.testLocation withEvent:event]!=layer)[failures addObject:@"Pencil cannot select a ruler handle"];
+            pencil.testLocation=CGPointMake(body.x,body.y);
+            if([layer hitTest:pencil.testLocation withEvent:event]!=nil)[failures addObject:@"Ruler body intercepts Pencil painting"];
+            finger.testLocation=CGPointMake(body.x,body.y);pencil.testLocation=CGPointMake(body.x+250,body.y+100);event.testTouches=[NSSet setWithObjects:pencil,finger,nil];
+            if([layer hitTest:finger.testLocation withEvent:event]!=layer)[failures addObject:@"An unrelated Pencil contact blocks finger manipulation"];
+            UIButton *nativeUndo=[UIButton buttonWithType:UIButtonTypeSystem];
+            CGPoint undoPoint=[layer convertPoint:finger.testLocation toView:self.window.rootViewController.view];
+            nativeUndo.frame=CGRectMake(undoPoint.x-20,undoPoint.y-20,40,40);[self.window.rootViewController.view addSubview:nativeUndo];
+            if([layer hitTest:finger.testLocation withEvent:event]!=nil)[failures addObject:@"The ruler steals touches intended for native Undo or slider controls"];
+            [nativeUndo removeFromSuperview];
+            BOOL pencilPan=NO;
+            for(UIGestureRecognizer *gesture in layer.gestureRecognizers)if([gesture isKindOfClass:UIPanGestureRecognizer.class] && [gesture.allowedTouchTypes containsObject:@(UITouchTypePencil)])pencilPan=YES;
+            if(!pencilPan)[failures addObject:@"Ruler drag recognizer rejects the Pencil"];
             DocumentValkyrieViewController *unrelated=[DocumentValkyrieViewController new];unrelated.valkyrieController=[PRTestEngineController new];
             if([unrelated constrainedControlPoints:rawBatch initialLocationInView:CGPointZero]!=rawBatch)[failures addObject:@"Ruler altered an unrelated document pipeline"];
             if([[layer valueForKey:@"nativeSamples"] unsignedIntegerValue]<60)[failures addObject:@"Native projection counter did not observe the real hooked entry point"];
@@ -193,7 +257,7 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             if([[layer valueForKey:@"guideVisible"] boolValue])[failures addObject:@"Ruler cannot be dismissed"];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
         }
-        NSDictionary *result=@{@"passed":@(failures.count==0),@"failures":failures,@"scope":@"Real Objective-C runtime hook around native paint-batch test double; pan/zoom/rotation transforms; committed/predicted point copies and stylus metadata; 3 on-curve handles; unrelated document and disabled passthrough; real Procreate binary not executed"};
+        NSDictionary *result=@{@"passed":@(failures.count==0),@"failures":failures,@"scope":@"Native paint-batch runtime hook with explicit test doubles; sparse full-arc sweep including rendered connections, stable replay indices and interpolated dynamics; Pencil handle/body routing and mixed finger/Pencil events; native transform and symmetry bridge; real Procreate binary not executed"};
         NSString *path=[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"toolbar-test.json"];
         [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil] writeToFile:path atomically:YES];
     }];
