@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #import "Geometry.h"
+#import "NativePlot.h"
 
 @interface PRLayer : UIView <UIGestureRecognizerDelegate>
 @property(nonatomic) PRGuide guide;
@@ -29,6 +30,7 @@
 @end
 static __weak PRLayer *activeLayer;
 static BOOL nativeHookReady;
+static BOOL nativePlotHookReady;
 
 // Getter calls are restricted to documented-by-metadata object-returning methods.
 static id nativeObject(id object, NSString *name) {
@@ -79,6 +81,92 @@ static id (*originalConstrainedPoints)(id,SEL,id,CGPoint);
 static BOOL pointConverter(id object,SEL selector) {
     NSMethodSignature *s=[object methodSignatureForSelector:selector];
     return s && s.numberOfArguments==3 && strcmp(s.methodReturnType,@encode(CGPoint))==0 && strcmp([s getArgumentTypeAtIndex:2],@encode(CGPoint))==0;
+}
+static char guideSnapshotKey;
+static NSData *snapshotForEngine(id engine) {
+    PRLayer *layer=activeLayer;
+    if(!NSThread.isMainThread || !layer.snap || !layer.guideVisible || !layer.window)return nil;
+    if(engine!=nativeObject(nativeObject(layer.documentController,@"modelController"),@"valkyrieController"))return nil;
+    UIView *render=nativeObject(engine,@"valkyrieView");
+    if(![render isKindOfClass:UIView.class] || render.window!=layer.window)return nil;
+    UIView *source=render.superview;
+    SEL selector=NSSelectorFromString(@"valkyriePointFromViewPoint:");
+    if(!source || !pointConverter(engine,selector))return nil;
+    CGPoint (*convert)(id,SEL,CGPoint)=(void *)[engine methodForSelector:selector];
+    PRGuide screen=layer.guide,document=screen;
+    document.center=(PRPoint){0,0};document.angle=0;document.radius=1;
+    PRPoint p[3];
+    for(int i=0;i<3;i++){
+        PRPoint world=screen.kind==PRLine?pr_world((PRPoint){(i-1)*screen.radius,0},screen):pr_handle(i,screen);
+        CGPoint view=[layer convertPoint:CGPointMake(world.x,world.y) toView:source];
+        CGPoint value=convert(engine,selector,view);
+        if(!isfinite(value.x) || !isfinite(value.y))return nil;
+        p[i]=(PRPoint){value.x,value.y};document.points[i]=p[i];
+    }
+    if(screen.kind==PRLine){document.center=p[1];document.angle=atan2(p[2].y-p[0].y,p[2].x-p[0].x);}
+    return [NSData dataWithBytes:&document length:sizeof(document)];
+}
+static BOOL (*originalPaintBegan)(id,SEL,id,id);
+static void (*originalPaintRestart)(id,SEL,id,id);
+typedef id (*PRCopyOptionsIMP)(id,SEL,NSZone *) __attribute__((ns_returns_retained));
+static PRCopyOptionsIMP originalCopyStrokeOptions;
+static id (*originalSecondaryOptions)(id,SEL);
+// The native ABI contains fourteen arrays of four floats, passed by value.
+typedef struct {float values[14][4];} PRNativeCurve;
+static void (*originalPlotCurve)(id,SEL,PRNativeCurve,id,float);
+static id optionsForStroke(id engine,id options) {
+    NSData *snapshot=snapshotForEngine(engine);
+    if(!snapshot || ![options isKindOfClass:NSClassFromString(@"ValkyrieStrokeOptions")])return options;
+    // Each stroke owns its snapshot; never tag the reusable brush settings object.
+    id copy=[options copy];if(!copy)return options;objc_setAssociatedObject(copy,&guideSnapshotKey,snapshot,OBJC_ASSOCIATION_RETAIN);return copy;
+}
+static BOOL paintBegan(id engine,SEL selector,id points,id options) {
+    return originalPaintBegan(engine,selector,points,optionsForStroke(engine,options));
+}
+static void paintRestart(id engine,SEL selector,id points,id options) {
+    originalPaintRestart(engine,selector,points,optionsForStroke(engine,options));
+}
+// The replacement IMP must preserve copyWithZone's +1 ownership convention.
+static id copyStrokeOptions(id options,SEL selector,NSZone *zone) NS_RETURNS_RETAINED;
+static id copyStrokeOptions(id options,SEL selector,NSZone *zone) {
+    id copy=originalCopyStrokeOptions(options,selector,zone);
+    if(copy)objc_setAssociatedObject(copy,&guideSnapshotKey,objc_getAssociatedObject(options,&guideSnapshotKey),OBJC_ASSOCIATION_RETAIN);return copy;
+}
+static id secondaryStrokeOptions(id options,SEL selector) {
+    id secondary=originalSecondaryOptions(options,selector);
+    if(secondary)objc_setAssociatedObject(secondary,&guideSnapshotKey,objc_getAssociatedObject(options,&guideSnapshotKey),OBJC_ASSOCIATION_RETAIN);return secondary;
+}
+static void plotCurve(id plot,SEL selector,PRNativeCurve curve,id previous,float angle) {
+    originalPlotCurve(plot,selector,curve,previous,angle);
+    NSData *snapshot=objc_getAssociatedObject(nativeObject(plot,@"options"),&guideSnapshotKey);
+    if(snapshot.length!=sizeof(PRGuide))return;
+    PRGuide guide;[snapshot getBytes:&guide length:sizeof(guide)];
+    SEL points=NSSelectorFromString(@"points"),count=NSSelectorFromString(@"plotCount");
+    PRNativeDab *(*buffer)(id,SEL)=(void *)[plot methodForSelector:points];
+    NSUInteger (*size)(id,SEL)=(void *)[plot methodForSelector:count];
+    PRNativeDab *dabs=buffer(plot,points);NSUInteger n=size(plot,count);
+    if(dabs && n && n<=65536)pr_constrain_dabs(dabs,n,guide);
+}
+static void installNativePlotHook(void) {
+    if(nativePlotHookReady)return;
+    Class engine=NSClassFromString(@"DocumentValkyrieController"),options=NSClassFromString(@"ValkyrieStrokeOptions"),plot=NSClassFromString(@"ValkyrieStrokePlot");
+    Method begin=class_getInstanceMethod(engine,NSSelectorFromString(@"paintBegan:options:")),copy=class_getInstanceMethod(options,@selector(copyWithZone:)),draw=class_getInstanceMethod(plot,NSSelectorFromString(@"plotCurve:previousPlot:initialAngle:"));
+    if(!begin || !copy || !draw)return;
+    NSMethodSignature *a=[NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(begin)],*b=[NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(copy)],*c=[NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(draw)];
+    if(a.numberOfArguments!=4 || strcmp(a.methodReturnType,@encode(BOOL)) || [a getArgumentTypeAtIndex:2][0]!='@' || [a getArgumentTypeAtIndex:3][0]!='@' || b.numberOfArguments!=3 || b.methodReturnType[0]!='@' || [b getArgumentTypeAtIndex:2][0]!='^')return;
+    if(c.numberOfArguments!=5 || strcmp(c.methodReturnType,"v") || [c getArgumentTypeAtIndex:2][0]!='{' || [c getArgumentTypeAtIndex:3][0]!='@' || strcmp([c getArgumentTypeAtIndex:4],"f"))return;
+    NSUInteger bytes=0;NSGetSizeAndAlignment([c getArgumentTypeAtIndex:2],&bytes,NULL);if(bytes!=sizeof(PRNativeCurve))return;
+    Ivar data=class_getInstanceVariable(plot,"_points"),length=class_getInstanceVariable(plot,"_plotCount");
+    if(!data || !length || ivar_getOffset(data)!=0x308 || ivar_getOffset(length)!=0x310)return;
+    NSMethodSignature *p=[plot instanceMethodSignatureForSelector:NSSelectorFromString(@"points")],*n=[plot instanceMethodSignatureForSelector:NSSelectorFromString(@"plotCount")];
+    if(!p || p.numberOfArguments!=2 || p.methodReturnType[0]!='^' || !n || n.numberOfArguments!=2 || strcmp(n.methodReturnType,@encode(NSUInteger)))return;
+    originalPaintBegan=(void *)method_setImplementation(begin,(IMP)paintBegan);
+    Method restart=class_getInstanceMethod(engine,NSSelectorFromString(@"paintRestart:options:"));
+    if(restart){NSMethodSignature *s=[NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(restart)];if(s.numberOfArguments==4 && !strcmp(s.methodReturnType,"v") && [s getArgumentTypeAtIndex:2][0]=='@' && [s getArgumentTypeAtIndex:3][0]=='@')originalPaintRestart=(void *)method_setImplementation(restart,(IMP)paintRestart);}
+    originalCopyStrokeOptions=(void *)method_setImplementation(copy,(IMP)copyStrokeOptions);
+    Method secondary=class_getInstanceMethod(options,NSSelectorFromString(@"secondaryOptions"));
+    if(secondary){NSMethodSignature *s=[NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(secondary)];if(s.numberOfArguments==2 && s.methodReturnType[0]=='@')originalSecondaryOptions=(void *)method_setImplementation(secondary,(IMP)secondaryStrokeOptions);}
+    originalPlotCurve=(void *)method_setImplementation(draw,(IMP)plotCurve);nativePlotHookReady=YES;
 }
 // Fixed subdivision preserves contiguous, repeatable IDs in overlapping native batches.
 enum { PRCurveSteps=16 };
@@ -161,6 +249,7 @@ static id constrainedPoints(id receiver,SEL selector,id points,CGPoint initial) 
     return projectNativePoints(receiver,originalConstrainedPoints(receiver,selector,points,initial));
 }
 static void installNativeInputHook(void) {
+    installNativePlotHook();
     if(nativeHookReady)return;
     Class target=NSClassFromString(@"DocumentValkyrieViewController");SEL selector=NSSelectorFromString(@"constrainedControlPoints:initialLocationInView:");
     Method method=class_getInstanceMethod(target,selector);if(!method)return;
@@ -245,7 +334,7 @@ static void installNativeInputHook(void) {
         id engine=nativeObject(nativeObject(_documentController,@"modelController"),@"valkyrieController");
         id render=nativeObject(engine,@"valkyrieView");
         _canvas=[render isKindOfClass:UIView.class]?((UIView *)render).superview:nil;
-        _snap=nativeHookReady && _canvas.window && _canvas.window==self.window;_selecting=NO;_nativeSamples=0;[self updateRulerStatus];
+        _snap=nativeHookReady && nativePlotHookReady && _canvas.window && _canvas.window==self.window;_selecting=NO;_nativeSamples=0;[self updateRulerStatus];
     }
     [self setNeedsDisplay];
 }
@@ -307,7 +396,7 @@ static void installNativeInputHook(void) {
     return nil;
 }
 - (void)updateRulerStatus {
-    if(!nativeHookReady || !_snap){_status.text=@"Collegamento al disegno non disponibile";return;}
+    if(!nativeHookReady || !nativePlotHookReady || !_snap){_status.text=@"Collegamento al disegno non disponibile";return;}
     _status.text=@"Tratto vincolato · sposta i cerchi per regolare";
 }
 - (void)kind:(UISegmentedControl *)s {_guide.kind=s.selectedSegmentIndex==0?PRLine:PRFlexible;[self updateRulerStatus];[self setNeedsDisplay];}

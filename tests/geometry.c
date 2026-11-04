@@ -1,4 +1,6 @@
 #include "../src/Geometry.h"
+#include "../src/NativePlot.h"
+#include <string.h>
 #include <assert.h>
 #include <stdio.h>
 static void near(double a,double b){assert(fabs(a-b)<.0001);}
@@ -32,5 +34,22 @@ int main(void) {
     for(int i=0;i<3;i++){p=pr_handle(i,g);assert(p.x>=0 && p.x<=1024 && p.y>=0 && p.y<=768);}
     for(int i=0;i<=1000;i++){p=pr_world(pr_curve(i/1000.,g),g);assert(p.x>=0 && p.x<=1024 && p.y>=0 && p.y<=768);}
     near(g.points[1].x,old.x);
-    puts("Three-point ruler interpolation, projection, endpoint rotation and fit tests passed");
+    // Model the downstream renderer pulling a complete sweep into the curve's interior.
+    g=pr_default_guide((PRPoint){200,200});g.kind=PRFlexible;g.angle=.6;
+    PRNativeDab dabs[65],before[65];memset(dabs,0x6d,sizeof(dabs));
+    PRPoint first=pr_handle(0,g),last=pr_handle(2,g);
+    for(int i=0;i<65;i++){
+        dabs[i].origin[0]=first.x+(last.x-first.x)*i/64.;dabs[i].origin[1]=first.y+(last.y-first.y)*i/64.;
+        dabs[i].variance[0]=7;dabs[i].variance[1]=13;
+    }
+    memcpy(before,dabs,sizeof(dabs));pr_constrain_dabs(dabs,65,g);
+    for(int i=0;i<65;i++){
+        PRPoint origin={dabs[i].origin[0],dabs[i].origin[1]},jittered={origin.x+dabs[i].variance[0],origin.y+dabs[i].variance[1]};
+        assert(pr_distance2(origin,pr_project(origin,g))<.00001);assert(pr_distance2(jittered,pr_project(jittered,g))<.00001);
+        assert(!memcmp(dabs[i].prefix,before[i].prefix,sizeof(dabs[i].prefix)));
+        assert(!memcmp(dabs[i].middle,before[i].middle,sizeof(dabs[i].middle)));
+        assert(!memcmp(dabs[i].suffix,before[i].suffix,sizeof(dabs[i].suffix)));
+    }
+    dabs[0].origin[0]=NAN;PRNativeDab invalid=dabs[0];pr_constrain_dabs(dabs,1,g);assert(!memcmp(&invalid,dabs,sizeof(invalid)));
+    puts("Geometry and post-smoothing native dab projection tests passed");
 }

@@ -8,6 +8,8 @@ The toolbar's Righello button opens two choices: Dritto and Flessibile. Native p
 
 The normal ruler has two endpoint handles to pivot/resize it. The flexible ruler has three handles directly on its curve: two ends and a bend point. Drag any handle with a finger or Pencil to reshape it; drag the translucent body with a finger to move the whole guide. Pencil strokes on the body pass through to painting. Two fingers rotate/pinch-scale it, with cardinal-angle snapping. Double-tap its body to reset, or a flexible handle to fit the current curve into the view. Blocca disables guide manipulation. Native controls such as Undo and brush sliders take priority over the guide. Press the toolbar icon again for free drawing.
 
+V7 additionally constrains final native brush-dab origins after downstream smoothing/interpolation, including the native positional variance. Each stroke receives an immutable document-coordinate guide snapshot on a private copy of its options; delayed render-queue work never reads UIKit or the live guide. The buffer layout is restricted to the analyzed build and checked against runtime ivar offsets and method ABIs. See [the post-smoothing correction](docs/Video-v7-correction.md).
+
 The interface uses a compact selector and neutral translucent ruler bodies, matching the interaction shown in the reference rather than an external cubic editing scaffold.
 
 ## Symmetry
@@ -16,7 +18,7 @@ The second toolbar button offers Verticale, Orizzontale, Entrambi and Radiale th
 
 ## Validation boundaries
 
-GitHub Actions compiles an ARM64 dylib with the iPhoneOS SDK, runs C geometry and Python packaging tests, and runs a UIKit iPad harness. The production Objective-C method hook is exercised through an exact-ABI native-input test double, not through a standalone projection helper. The harness checks pan/zoom/rotation conversion, copied pressure/tilt/timestamps, committed/predicted samples and passthrough when disabled or used by unrelated documents. It does not run real Procreate. Device input/rendering and downstream smoothing remain unverified.
+GitHub Actions compiles an ARM64 dylib with the iPhoneOS SDK, runs C geometry and Python packaging tests, and runs a UIKit iPad harness. Production input and post-smoothing hooks are exercised through explicit native ABI/layout test doubles. In addition to the input/gesture/symmetry regressions, the harness deliberately generates an interior chord as downstream output, then checks final brush origins and variance, unchanged opaque attributes, options-copy propagation, delayed off-main-thread execution and freehand passthrough. It does not execute real Procreate. Real-device rendering, latency, undo/save/export and compatibility remain unverified for v7.
 
 Guides remain fixed to the screen during canvas pan/zoom/rotation and their settings are not saved in projects. Save copies of drawings before testing.
 

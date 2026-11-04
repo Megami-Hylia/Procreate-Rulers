@@ -2,6 +2,8 @@
 // This verifies our UI/lifecycle, NOT compatibility with the real Procreate engine.
 #import <UIKit/UIKit.h>
 #import "../src/Geometry.h"
+#import "../src/NativePlot.h"
+#include <string.h>
 @protocol PRTestLayerAccess
 - (PRGuide)guide;
 - (void)moveHandleAtIndex:(NSInteger)index toPoint:(CGPoint)point;
@@ -53,18 +55,61 @@
 @end
 @implementation PRTestDocument
 @end
-@interface PRTestEngineController : NSObject
+@interface ValkyrieStrokeOptions : NSObject <NSCopying>
+@property(nonatomic) NSInteger marker;
+- (id)secondaryOptions;
+@end
+@implementation ValkyrieStrokeOptions
+- (id)copyWithZone:(NSZone *)zone {ValkyrieStrokeOptions *copy=[ValkyrieStrokeOptions new];copy.marker=_marker;return copy;}
+- (id)secondaryOptions {return _marker==-1?nil:[self copy];}
+@end
+typedef struct {float values[14][4];} PRTestNativeCurve;
+// Explicit native layout fixture, checked by the same runtime guards as production.
+@interface ValkyrieStrokePlot : NSObject {
+@public
+    uint8_t _padding[0x300];
+    PRNativeDab *_points;
+    NSUInteger _plotCount;
+}
+@property(nonatomic,strong) ValkyrieStrokeOptions *options;
+@property(nonatomic,strong) NSArray<NSValue *> *fixtureOrigins;
+@property(nonatomic,strong) NSMutableData *storage;
+@property(nonatomic,strong) NSData *originalBytes;
+@property(nonatomic) NSUInteger originalCalls;
+- (PRNativeDab *)points;
+- (NSUInteger)plotCount;
+- (void)plotCurve:(PRTestNativeCurve)curve previousPlot:(id)previous initialAngle:(float)angle;
+@end
+@implementation ValkyrieStrokePlot
+- (PRNativeDab *)points {return _points;}
+- (NSUInteger)plotCount {return _plotCount;}
+- (void)plotCurve:(PRTestNativeCurve)curve previousPlot:(id)previous initialAngle:(float)angle {
+    _originalCalls++;_plotCount=_fixtureOrigins.count;_storage=[NSMutableData dataWithLength:_plotCount*sizeof(PRNativeDab)];_points=_storage.mutableBytes;
+    memset(_points,0x6d,_storage.length);
+    for(NSUInteger i=0;i<_plotCount;i++){
+        CGPoint p=_fixtureOrigins[i].CGPointValue;_points[i].origin[0]=p.x;_points[i].origin[1]=p.y;
+        _points[i].variance[0]=7;_points[i].variance[1]=13;
+    }
+    _originalBytes=[_storage copy];
+}
+@end
+@interface DocumentValkyrieController : NSObject
 @property(nonatomic,strong) PRTestDocument *document;
 @property(nonatomic) BOOL enabled;
 @property(nonatomic,strong) UIView *valkyrieView;
 @property(nonatomic) CGAffineTransform documentToView;
+@property(nonatomic,strong) ValkyrieStrokeOptions *valkyrieStrokeOptions;
+- (BOOL)paintBegan:(NSArray *)points options:(ValkyrieStrokeOptions *)options;
+- (void)paintRestart:(NSArray *)points options:(ValkyrieStrokeOptions *)options;
 - (CGPoint)viewPointFromValkyriePoint:(CGPoint)point;
 - (CGPoint)valkyriePointFromViewPoint:(CGPoint)point;
 - (void)drawingGuideEnabled:(BOOL)enabled;
 - (void)drawingGuideTypeChanged:(NSInteger)type;
 - (void)drawingGuideSymmetryTypeChanged:(NSInteger)type;
 @end
-@implementation PRTestEngineController
+@implementation DocumentValkyrieController
+- (BOOL)paintBegan:(NSArray *)points options:(ValkyrieStrokeOptions *)options {_valkyrieStrokeOptions=options;return YES;}
+- (void)paintRestart:(NSArray *)points options:(ValkyrieStrokeOptions *)options {_valkyrieStrokeOptions=options;}
 - (CGPoint)viewPointFromValkyriePoint:(CGPoint)p {return CGPointApplyAffineTransform(p,_documentToView);}
 - (CGPoint)valkyriePointFromViewPoint:(CGPoint)p {return CGPointApplyAffineTransform(p,CGAffineTransformInvert(_documentToView));}
 - (void)drawingGuideEnabled:(BOOL)enabled {_enabled=enabled;if(!_document.drawingGuide)_document.drawingGuide=[ValkyrieDrawingGuide new];}
@@ -73,7 +118,7 @@
 @end
 // Exact native entry-point ABI; its original implementation deliberately does no snapping.
 @interface DocumentValkyrieViewController : NSObject
-@property(nonatomic,strong) PRTestEngineController *valkyrieController;
+@property(nonatomic,strong) DocumentValkyrieController *valkyrieController;
 @property(nonatomic) NSUInteger originalCalls;
 - (NSArray *)constrainedControlPoints:(NSArray *)points initialLocationInView:(CGPoint)initial;
 @end
@@ -94,7 +139,7 @@
 @interface PRTestModel : NSObject
 @property(nonatomic,strong) PRTestDocument *document;
 @property(nonatomic,strong) PRTestCheckpoint *drawingGuideController;
-@property(nonatomic,strong) PRTestEngineController *valkyrieController;
+@property(nonatomic,strong) DocumentValkyrieController *valkyrieController;
 @property(nonatomic) BOOL began, refreshed;
 @property(nonatomic,strong) UIView *canvasView;
 - (void)beginDrawingGuideMode;
@@ -114,7 +159,7 @@
     [super viewDidLoad];self.view.backgroundColor=[UIColor colorWithWhite:.92 alpha:1];
     _modelController=[PRTestModel new];_modelController.document=[PRTestDocument new];_modelController.drawingGuideController=[PRTestCheckpoint new];
     _modelController.document.editingLayer=[PRTestEditingLayer new];
-    _modelController.valkyrieController=[PRTestEngineController new];_modelController.valkyrieController.document=_modelController.document;
+    _modelController.valkyrieController=[DocumentValkyrieController new];_modelController.valkyrieController.document=_modelController.document;
     _modelController.canvasView=[[UIView alloc]initWithFrame:CGRectMake(20,80,self.view.bounds.size.width-40,self.view.bounds.size.height-100)];
     _modelController.valkyrieController.documentToView=CGAffineTransformConcat(CGAffineTransformMakeScale(1.7,1.7),CGAffineTransformConcat(CGAffineTransformMakeRotation(.3),CGAffineTransformMakeTranslation(70,40)));
     _modelController.valkyrieController.valkyrieView=[[UIView alloc]initWithFrame:_modelController.canvasView.bounds];[_modelController.canvasView addSubview:_modelController.valkyrieController.valkyrieView];
@@ -159,7 +204,7 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             if(kinds.numberOfSegments!=2 || ![[kinds titleForSegmentAtIndex:0] isEqualToString:@"Dritto"] || ![[kinds titleForSegmentAtIndex:1] isEqualToString:@"Flessibile"])[failures addObject:@"Ruler choices are not Dritto/Flessibile"];
             UIView *canvas=((DocumentViewController *)self.window.rootViewController).modelController.canvasView;
             PRTestModel *boundModel=((DocumentViewController *)self.window.rootViewController).modelController;
-            PRTestEngineController *engine=boundModel.valkyrieController;
+            DocumentValkyrieController *engine=boundModel.valkyrieController;
             DocumentValkyrieViewController *input=[DocumentValkyrieViewController new];input.valkyrieController=engine;
             PRGuide guide=[(id<PRTestLayerAccess>)layer guide];
             NSMutableArray *rawBatch=[NSMutableArray array];
@@ -217,6 +262,41 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             ValkyrieStrokeSegmentPoint *last=sparse.lastObject;last.index=5;
             if([input constrainedControlPoints:sparse initialLocationInView:CGPointZero]!=sparse)[failures addObject:@"Unsupported native index gaps were expanded unsafely"];
             last.index=1;
+            ValkyrieStrokeOptions *settings=[ValkyrieStrokeOptions new];settings.marker=42;
+            [engine paintBegan:rawBatch options:settings];
+            if(engine.valkyrieStrokeOptions==settings || engine.valkyrieStrokeOptions.marker!=42)[failures addObject:@"Ruler stroke did not get an isolated native-options snapshot"];
+            ValkyrieStrokePlot *plot=[ValkyrieStrokePlot new];plot.options=[[engine.valkyrieStrokeOptions copy] secondaryOptions];
+            ValkyrieStrokeOptions *noSecondary=[plot.options copy];noSecondary.marker=-1;
+            if([noSecondary secondaryOptions])[failures addObject:@"Missing secondary native options were not preserved"];
+            PRGuide nativeGuide=guide;nativeGuide.center=(PRPoint){0,0};nativeGuide.angle=0;nativeGuide.radius=1;
+            for(int i=0;i<3;i++){
+                PRPoint p=pr_handle(i,guide);CGPoint value=[engine valkyriePointFromViewPoint:[layer convertPoint:CGPointMake(p.x,p.y) toView:canvas]];
+                nativeGuide.points[i]=(PRPoint){value.x,value.y};
+            }
+            NSMutableArray *chord=[NSMutableArray array];
+            for(int i=0;i<=64;i++){
+                PRPoint a=nativeGuide.points[0],b=nativeGuide.points[2];
+                [chord addObject:[NSValue valueWithCGPoint:CGPointMake(a.x+(b.x-a.x)*i/64.,a.y+(b.y-a.y)*i/64.)]];
+            }
+            plot.fixtureOrigins=chord;
+            dispatch_sync(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{[plot plotCurve:(PRTestNativeCurve){0} previousPlot:nil initialAngle:0];});
+            if(plot.originalCalls!=1 || plot.plotCount!=65)[failures addObject:@"Post-smoothing runtime hook skipped the original renderer"];
+            for(NSUInteger i=0;i<plot.plotCount;i++){
+                PRNativeDab *p=plot.points+i;PRPoint origin={p->origin[0],p->origin[1]},jittered={origin.x+p->variance[0],origin.y+p->variance[1]};
+                if(pr_distance2(origin,pr_project(origin,nativeGuide))>.00001 || pr_distance2(jittered,pr_project(jittered,nativeGuide))>.00001)[failures addObject:@"Final brush dabs still lie inside the curve after downstream smoothing"];
+                const PRNativeDab *before=(const PRNativeDab *)plot.originalBytes.bytes+i;
+                if(memcmp(p->prefix,before->prefix,sizeof(p->prefix)) || memcmp(p->middle,before->middle,sizeof(p->middle)) || memcmp(p->suffix,before->suffix,sizeof(p->suffix)))[failures addObject:@"Final projection changed opaque brush/color/pressure fields"];
+            }
+            NSData *rendered=[plot.storage copy];
+            [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
+            dispatch_sync(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{[plot plotCurve:(PRTestNativeCurve){0} previousPlot:nil initialAngle:0];});
+            if(![rendered isEqualToData:plot.storage])[failures addObject:@"Delayed rendering lost the immutable stroke guide after the ruler was disabled"];
+            [engine paintBegan:rawBatch options:settings];
+            if(engine.valkyrieStrokeOptions!=settings)[failures addObject:@"Disabled ruler still copies/tags future freehand stroke options"];
+            ValkyrieStrokePlot *freehand=[ValkyrieStrokePlot new];freehand.options=settings;freehand.fixtureOrigins=chord;
+            [freehand plotCurve:(PRTestNativeCurve){0} previousPlot:nil initialAngle:0];
+            if(![freehand.storage isEqualToData:freehand.originalBytes])[failures addObject:@"Post-smoothing hook modified a freehand stroke"];
+            [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             PRTestTouch *pencil=[PRTestTouch new],*finger=[PRTestTouch new];pencil.testType=UITouchTypePencil;finger.testType=UITouchTypeDirect;
             PRPoint handle=pr_handle(0,guide),body=pr_world(pr_curve(.25,guide),guide);
             pencil.testLocation=CGPointMake(handle.x,handle.y);
@@ -234,8 +314,10 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             BOOL pencilPan=NO;
             for(UIGestureRecognizer *gesture in layer.gestureRecognizers)if([gesture isKindOfClass:UIPanGestureRecognizer.class] && [gesture.allowedTouchTypes containsObject:@(UITouchTypePencil)])pencilPan=YES;
             if(!pencilPan)[failures addObject:@"Ruler drag recognizer rejects the Pencil"];
-            DocumentValkyrieViewController *unrelated=[DocumentValkyrieViewController new];unrelated.valkyrieController=[PRTestEngineController new];
+            DocumentValkyrieViewController *unrelated=[DocumentValkyrieViewController new];unrelated.valkyrieController=[DocumentValkyrieController new];
             if([unrelated constrainedControlPoints:rawBatch initialLocationInView:CGPointZero]!=rawBatch)[failures addObject:@"Ruler altered an unrelated document pipeline"];
+            [unrelated.valkyrieController paintBegan:rawBatch options:settings];
+            if(unrelated.valkyrieController.valkyrieStrokeOptions!=settings)[failures addObject:@"Ruler tagged another document's rendering options"];
             if([[layer valueForKey:@"nativeSamples"] unsignedIntegerValue]<60)[failures addObject:@"Native projection counter did not observe the real hooked entry point"];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             if([input constrainedControlPoints:rawBatch initialLocationInView:CGPointZero]!=rawBatch)[failures addObject:@"Disabling the ruler failed to restore the original native samples"];
@@ -257,7 +339,7 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             if([[layer valueForKey:@"guideVisible"] boolValue])[failures addObject:@"Ruler cannot be dismissed"];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
         }
-        NSDictionary *result=@{@"passed":@(failures.count==0),@"failures":failures,@"scope":@"Native paint-batch runtime hook with explicit test doubles; sparse full-arc sweep including rendered connections, stable replay indices and interpolated dynamics; Pencil handle/body routing and mixed finger/Pencil events; native transform and symmetry bridge; real Procreate binary not executed"};
+        NSDictionary *result=@{@"passed":@(failures.count==0),@"failures":failures,@"scope":@"Production input and post-smoothing plot runtime hooks with explicit native ABI/layout test doubles; off-main-thread final brush dab and variance projection, options-copy propagation, immutable delayed snapshots, untouched opaque fields and freehand passthrough; previous input/gesture/symmetry regressions; real Procreate binary not executed"};
         NSString *path=[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"toolbar-test.json"];
         [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil] writeToFile:path atomically:YES];
     }];
