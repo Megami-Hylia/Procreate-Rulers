@@ -10,10 +10,19 @@
 @property(nonatomic,strong) UILabel *status;
 @property(nonatomic) NSInteger dragIndex;
 @property(nonatomic) PRPoint dragStart;
+@property(nonatomic) CGFloat rotationStart;
+@property(nonatomic,strong) UISlider *angleSlider, *sizeSlider;
 @property(nonatomic,strong) UIButton *rulerButton, *symmetryButton;
 @property(nonatomic,weak) UIView *transformButton;
 @property(nonatomic,weak) UIViewController *documentController;
-@property(nonatomic) BOOL guideVisible;
+@property(nonatomic) BOOL guideVisible, rulerLocked;
+@property(nonatomic,strong) UIButton *lockButton;
+@property(nonatomic,strong) UIView *symmetryPanel;
+@property(nonatomic,strong) UISegmentedControl *symmetryModes;
+@property(nonatomic,strong) UILabel *symmetryStatus;
+- (void)resetRuler;
+- (void)fitRuler;
+
 - (void)refreshPlacement;
 @end
 static __weak PRLayer *activeLayer;
@@ -120,15 +129,26 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
     UIStackView *row=[UIStackView new];row.distribution=UIStackViewDistributionFillEqually;
     [row addArrangedSubview:[self button:@"Righelli ▾" action:@selector(collapse:)]];
     [row addArrangedSubview:[self button:@"Scegli tela" action:@selector(selectCanvas:)]];
+    _lockButton=[self button:@"Blocca" action:@selector(toggleLock:)];[row addArrangedSubview:_lockButton];
     [stack addArrangedSubview:row];
     UISegmentedControl *kinds=[[UISegmentedControl alloc]initWithItems:@[@"Dritto",@"Flessibile"]];
     kinds.accessibilityIdentifier=@"procreate-rulers-kind";
     kinds.selectedSegmentIndex=0;kinds.backgroundColor=UIColor.systemGrayColor;[kinds addTarget:self action:@selector(kind:) forControlEvents:UIControlEventValueChanged];[stack addArrangedSubview:kinds];
-    [stack addArrangedSubview:[self slider:-180 max:180 value:0 action:@selector(angle:) label:@"Angolo del righello"]];
-    [stack addArrangedSubview:[self slider:20 max:500 value:180 action:@selector(radius:) label:@"Dimensione della guida"]];
+    _angleSlider=[self slider:-180 max:180 value:0 action:@selector(angle:) label:@"Angolo del righello"];[stack addArrangedSubview:_angleSlider];
+    _sizeSlider=[self slider:1 max:500 value:180 action:@selector(radius:) label:@"Dimensione della guida"];[stack addArrangedSubview:_sizeSlider];
     _status=[UILabel new];_status.font=[UIFont systemFontOfSize:11];_status.textColor=UIColor.whiteColor;_status.numberOfLines=2;
     _status.text=@"Il tratto segue il righello.\nTrascina il centro blu per spostarlo.";[stack addArrangedSubview:_status];
-    UIPanGestureRecognizer *pan=[[UIPanGestureRecognizer alloc]initWithTarget:self action:@selector(move:)];pan.allowedTouchTypes=@[@(UITouchTypeDirect)];pan.delegate=self;[self addGestureRecognizer:pan];
+    UIPanGestureRecognizer *pan=[[UIPanGestureRecognizer alloc]initWithTarget:self action:@selector(move:)];pan.allowedTouchTypes=@[@(UITouchTypeDirect)];pan.maximumNumberOfTouches=1;pan.delegate=self;[self addGestureRecognizer:pan];
+    UIRotationGestureRecognizer *rotate=[[UIRotationGestureRecognizer alloc]initWithTarget:self action:@selector(rotateRuler:)];rotate.delegate=self;rotate.allowedTouchTypes=@[@(UITouchTypeDirect)];[self addGestureRecognizer:rotate];
+    UIPinchGestureRecognizer *pinch=[[UIPinchGestureRecognizer alloc]initWithTarget:self action:@selector(scaleRuler:)];pinch.delegate=self;pinch.allowedTouchTypes=@[@(UITouchTypeDirect)];[self addGestureRecognizer:pinch];
+    UITapGestureRecognizer *reset=[[UITapGestureRecognizer alloc]initWithTarget:self action:@selector(doubleTapRuler:)];reset.numberOfTapsRequired=2;reset.allowedTouchTypes=@[@(UITouchTypeDirect)];reset.delegate=self;[self addGestureRecognizer:reset];
+    _symmetryPanel=[[UIView alloc]initWithFrame:CGRectMake(12,65,390,150)];_symmetryPanel.backgroundColor=_panel.backgroundColor;_symmetryPanel.layer.cornerRadius=12;_symmetryPanel.hidden=YES;[self addSubview:_symmetryPanel];
+    UIStackView *symStack=[[UIStackView alloc]initWithFrame:CGRectMake(12,10,366,130)];symStack.axis=UILayoutConstraintAxisVertical;symStack.spacing=10;[_symmetryPanel addSubview:symStack];
+    _symmetryModes=[[UISegmentedControl alloc]initWithItems:@[@"Verticale",@"Orizzontale",@"Entrambi",@"Radiale"]];_symmetryModes.backgroundColor=UIColor.systemGrayColor;_symmetryModes.selectedSegmentIndex=0;_symmetryModes.accessibilityIdentifier=@"procreate-rulers-symmetry-modes";[_symmetryModes addTarget:self action:@selector(symmetryModeChanged:) forControlEvents:UIControlEventValueChanged];[symStack addArrangedSubview:_symmetryModes];
+    UIStackView *symActions=[UIStackView new];symActions.distribution=UIStackViewDistributionFillEqually;
+    [symActions addArrangedSubview:[self button:@"Modifica assi" action:@selector(editSymmetry:)]];
+    UIButton *off=[self button:@"Disattiva" action:@selector(disableSymmetry:)];off.accessibilityIdentifier=@"procreate-rulers-symmetry-off";[symActions addArrangedSubview:off];[symStack addArrangedSubview:symActions];
+    _symmetryStatus=[UILabel new];_symmetryStatus.numberOfLines=2;_symmetryStatus.font=[UIFont systemFontOfSize:12];_symmetryStatus.textColor=UIColor.whiteColor;[symStack addArrangedSubview:_symmetryStatus];
     return self;
 }
 - (void)layoutSubviews {[super layoutSubviews];[self refreshPlacement];}
@@ -145,17 +165,17 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
     }
     BOOL visible=document && !document.presentedViewController && _transformButton.window && !_transformButton.hidden && _transformButton.alpha>.01;
     _rulerButton.hidden=!visible;_symmetryButton.hidden=!visible;
-    if(!visible){_snap=NO;_selecting=NO;_panel.hidden=YES;_guideVisible=NO;[self setNeedsDisplay];return;}
+    if(!visible){_snap=NO;_selecting=NO;_panel.hidden=YES;_symmetryPanel.hidden=YES;_guideVisible=NO;[self setNeedsDisplay];return;}
     CGRect anchor=[_transformButton convertRect:_transformButton.bounds toView:self];
     CGFloat side=44, x=CGRectGetMaxX(anchor)+2;
     CGFloat y=CGRectGetMidY(anchor)-side/2;
     // Never overlay the existing right-hand brush/color controls in a narrow window.
-    if(x+2*side>self.bounds.size.width*.60){_rulerButton.hidden=YES;_symmetryButton.hidden=YES;_snap=NO;_guideVisible=NO;_panel.hidden=YES;return;}
+    if(x+2*side>self.bounds.size.width*.60){_rulerButton.hidden=YES;_symmetryButton.hidden=YES;_snap=NO;_guideVisible=NO;_panel.hidden=YES;_symmetryPanel.hidden=YES;return;}
     _rulerButton.frame=CGRectMake(x,y,side,side);_symmetryButton.frame=CGRectMake(x+side,y,side,side);
-    CGRect panel=_panel.frame;panel.origin=CGPointMake(fmin(x,self.bounds.size.width-panel.size.width-12),CGRectGetMaxY(_rulerButton.frame)+8);_panel.frame=panel;
+    CGRect panel=_panel.frame;panel.origin=CGPointMake(fmin(x,self.bounds.size.width-panel.size.width-12),CGRectGetMaxY(_rulerButton.frame)+8);_panel.frame=panel;CGRect sym=_symmetryPanel.frame;sym.origin=CGPointMake(fmin(x,self.bounds.size.width-sym.size.width-12),panel.origin.y);_symmetryPanel.frame=sym;
 }
 - (void)toggleRuler:(id)sender {
-    _guideVisible=!_guideVisible;_panel.hidden=!_guideVisible;
+    _symmetryPanel.hidden=YES;_guideVisible=!_guideVisible;_panel.hidden=!_guideVisible;
     _rulerButton.tintColor=_guideVisible?UIColor.systemBlueColor:[UIColor colorWithWhite:.76 alpha:1];
     if(!_guideVisible){_snap=NO;_selecting=NO;}
     if(_guideVisible){
@@ -165,26 +185,35 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
     }
     [self setNeedsDisplay];
 }
-- (void)openSymmetry:(id)sender {
-    _panel.hidden=YES;_guideVisible=NO;_snap=NO;_selecting=NO;
-    _rulerButton.tintColor=[UIColor colorWithWhite:.76 alpha:1];[self setNeedsDisplay];
+- (BOOL)activateSymmetryType:(NSInteger)mode finish:(BOOL)finish {
     id model=nativeObject(_documentController,@"modelController");
-    id engineController=nativeObject(model,@"valkyrieController");
-    // The native enable command also creates the default guide for a fresh canvas.
-    if(!nativeBool(engineController,@"drawingGuideEnabled:",YES)){[self showNativeError];return;}
-    id guide=nativeObject(nativeObject(model,@"document"),@"drawingGuide");
-    // Confirmed in the supplied build: guide type 3 is symmetry (symmetryStrokes).
-    if(!guide || ![guide isKindOfClass:NSClassFromString(@"ValkyrieDrawingGuide")] || !nativeVoid(model,@"beginDrawingGuideMode")){
-        [self showNativeError];return;
-    }
+    id engine=nativeObject(model,@"valkyrieController");
+    if(!nativeBool(engine,@"drawingGuideEnabled:",YES) || !nativeVoid(model,@"beginDrawingGuideMode")){[self showNativeError];return NO;}
     id controller=nativeObject(model,@"drawingGuideController");
-    // beginDrawingGuideMode may replace state: reacquire the current guide.
-    guide=nativeObject(nativeObject(model,@"document"),@"drawingGuide");
-    if(!controller || ![engineController respondsToSelector:NSSelectorFromString(@"drawingGuideTypeChanged:")] || ![controller respondsToSelector:NSSelectorFromString(@"finishCheckpoint")]){[self showNativeError];return;}
-    if(!nativeInteger(controller,@"beginGuideTypeChangedCheckpoint:",3)){[self showNativeError];return;}
-    BOOL changed=nativeInteger(engineController,@"drawingGuideTypeChanged:",3);
-    nativeVoid(controller,@"finishCheckpoint");nativeVoid(model,@"updateInterface");
-    if(!changed)[self showNativeError];
+    if(![controller respondsToSelector:NSSelectorFromString(@"finishCheckpoint")] || !nativeInteger(controller,@"beginGuideTypeChangedCheckpoint:",3)){[self showNativeError];return NO;}
+    BOOL changed=nativeInteger(engine,@"drawingGuideTypeChanged:",3) && nativeInteger(engine,@"drawingGuideSymmetryTypeChanged:",mode);
+    nativeVoid(controller,@"finishCheckpoint");
+    if(changed && finish)changed=nativeBool(controller,@"setAssistedValueForFinish:",YES) && nativeVoid(model,@"finishDrawingGuideMode");
+    nativeVoid(model,@"updateInterface");
+    if(!changed)[self showNativeError];return changed;
+}
+- (void)openSymmetry:(id)sender {
+    _panel.hidden=YES;_symmetryPanel.hidden=!_symmetryPanel.hidden;
+    if(!_symmetryPanel.hidden)[self symmetryModeChanged:_symmetryModes];
+}
+- (void)symmetryModeChanged:(UISegmentedControl *)control {
+    if([self activateSymmetryType:control.selectedSegmentIndex finish:YES])
+        _symmetryStatus.text=control.selectedSegmentIndex==3 ? @"Radiale: 8 settori. Assistenza attiva sul livello." : @"Assistenza attiva sul livello. Modifica assi per spostarli o ruotarli.";
+}
+- (void)editSymmetry:(id)sender {
+    _symmetryPanel.hidden=YES;_panel.hidden=YES;_guideVisible=NO;_snap=NO;_selecting=NO;[self setNeedsDisplay];
+    [self activateSymmetryType:_symmetryModes.selectedSegmentIndex finish:NO];
+}
+- (void)disableSymmetry:(id)sender {
+    id model=nativeObject(_documentController,@"modelController");id engine=nativeObject(model,@"valkyrieController");
+    if(!nativeBool(engine,@"drawingGuideEnabled:",NO)){[self showNativeError];return;}
+    nativeBool(nativeObject(nativeObject(model,@"document"),@"editingLayer"),@"setDrawingGuideAssisted:",NO);
+    nativeVoid(model,@"updateInterface");_symmetryPanel.hidden=YES;
 }
 - (void)showNativeError {
     UIViewController *presenter=_documentController ?: self.window.rootViewController;
@@ -199,7 +228,7 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
     if(hit!=self)return hit;
     if(_selecting)return self;
     BOOL pencil=NO;for(UITouch *touch in event.allTouches)if(touch.type==UITouchTypePencil)pencil=YES;
-    if(_guideVisible && !pencil && [self handleAtPoint:p]>=0)return self;
+    if(_guideVisible && !_rulerLocked && !pencil && [self handleAtPoint:p]>=0)return self;
     return nil;
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -232,10 +261,26 @@ static CGPoint hookedPrecisePrevious(UITouch *t,SEL s,UIView *v){return projectT
         double d=pr_distance2(p,pr_handle(i,_guide));
         if(d<distance){distance=d;best=i;}
     }
+    if(best<0 && pr_distance2(p,pr_project(p,_guide))<24*24)return 4;
     return best;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
-    return _guideVisible && !_selecting && touch.type==UITouchTypeDirect && touch.view==self && [self handleAtPoint:[touch locationInView:self]]>=0;
+    return _guideVisible && !_rulerLocked && !_selecting && touch.type==UITouchTypeDirect && touch.view==self && [self handleAtPoint:[touch locationInView:self]]>=0;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)a shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b {
+    return ([a isKindOfClass:UIRotationGestureRecognizer.class] && [b isKindOfClass:UIPinchGestureRecognizer.class]) || ([b isKindOfClass:UIRotationGestureRecognizer.class] && [a isKindOfClass:UIPinchGestureRecognizer.class]);
+}
+- (void)toggleLock:(id)sender {_rulerLocked=!_rulerLocked;[_lockButton setTitle:_rulerLocked?@"Sblocca":@"Blocca" forState:0];}
+- (void)rotateRuler:(UIRotationGestureRecognizer *)gesture {
+    if(gesture.state==UIGestureRecognizerStateBegan)_rotationStart=_guide.angle;
+    _guide.angle=pr_snap_angle(_rotationStart+gesture.rotation);_angleSlider.value=atan2(sin(_guide.angle),cos(_guide.angle))*180/M_PI;[self setNeedsDisplay];
+}
+- (void)scaleRuler:(UIPinchGestureRecognizer *)gesture {_guide.radius=fmax(1,fmin(500,_guide.radius*gesture.scale));gesture.scale=1;_sizeSlider.value=_guide.radius;[self setNeedsDisplay];}
+- (void)resetRuler {PRKind kind=_guide.kind;_guide=pr_default_guide((PRPoint){self.bounds.size.width/2,self.bounds.size.height*.6});_guide.kind=kind;_angleSlider.value=0;_sizeSlider.value=_guide.radius;[self setNeedsDisplay];}
+- (void)fitRuler {_guide=pr_fit_guide(_guide,self.bounds.size.width,self.bounds.size.height);_sizeSlider.value=_guide.radius;[self setNeedsDisplay];}
+- (void)doubleTapRuler:(UITapGestureRecognizer *)gesture {
+    NSInteger handle=[self handleAtPoint:[gesture locationInView:self]];
+    if(_guide.kind==PRFlexible && handle>=0 && handle<4)[self fitRuler];else [self resetRuler];
 }
 - (void)moveHandleAtIndex:(NSInteger)index toPoint:(CGPoint)p {
     pr_move_handle(&_guide,(int)index,(PRPoint){p.x,p.y});[self setNeedsDisplay];

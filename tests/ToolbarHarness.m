@@ -18,14 +18,21 @@ extern CGPoint PRTestProjectLocation(UITouch *touch,UIView *view,CGPoint raw);
 
 @interface ValkyrieDrawingGuide : NSObject
 @property(nonatomic) NSUInteger type;
+@property(nonatomic) NSInteger symmetryType;
 @property(nonatomic) BOOL updated;
 - (void)updateSegments;
 @end
 @implementation ValkyrieDrawingGuide
 - (void)updateSegments {_updated=YES;}
 @end
+@interface PRTestEditingLayer : NSObject
+@property(nonatomic) BOOL drawingGuideAssisted;
+@end
+@implementation PRTestEditingLayer
+@end
 @interface PRTestDocument : NSObject
 @property(nonatomic,strong) ValkyrieDrawingGuide *drawingGuide;
+@property(nonatomic,strong) PRTestEditingLayer *editingLayer;
 @end
 @implementation PRTestDocument
 @end
@@ -34,14 +41,17 @@ extern CGPoint PRTestProjectLocation(UITouch *touch,UIView *view,CGPoint raw);
 @property(nonatomic) BOOL enabled;
 - (void)drawingGuideEnabled:(BOOL)enabled;
 - (void)drawingGuideTypeChanged:(NSInteger)type;
+- (void)drawingGuideSymmetryTypeChanged:(NSInteger)type;
 @end
 @implementation PRTestEngineController
 - (void)drawingGuideEnabled:(BOOL)enabled {_enabled=enabled;if(!_document.drawingGuide)_document.drawingGuide=[ValkyrieDrawingGuide new];}
 - (void)drawingGuideTypeChanged:(NSInteger)type {_document.drawingGuide.type=type;[_document.drawingGuide updateSegments];}
+- (void)drawingGuideSymmetryTypeChanged:(NSInteger)type {_document.drawingGuide.symmetryType=type;}
 @end
 @interface PRTestCheckpoint : NSObject
 @property(nonatomic) NSInteger startedType;
 @property(nonatomic) BOOL finished;
+@property(nonatomic) BOOL assistedValueForFinish;
 - (void)beginGuideTypeChangedCheckpoint:(NSInteger)type;
 - (void)finishCheckpoint;
 @end
@@ -57,10 +67,12 @@ extern CGPoint PRTestProjectLocation(UITouch *touch,UIView *view,CGPoint raw);
 @property(nonatomic,strong) UIView *canvasView;
 - (void)beginDrawingGuideMode;
 - (void)updateInterface;
+- (void)finishDrawingGuideMode;
 @end
 @implementation PRTestModel
 - (void)beginDrawingGuideMode {_began=YES;}
 - (void)updateInterface {_refreshed=YES;}
+- (void)finishDrawingGuideMode {_document.editingLayer.drawingGuideAssisted=_drawingGuideController.assistedValueForFinish;}
 @end
 @interface DocumentViewController : UIViewController
 @property(nonatomic,strong) PRTestModel *modelController;
@@ -69,6 +81,7 @@ extern CGPoint PRTestProjectLocation(UITouch *touch,UIView *view,CGPoint raw);
 - (void)viewDidLoad {
     [super viewDidLoad];self.view.backgroundColor=[UIColor colorWithWhite:.92 alpha:1];
     _modelController=[PRTestModel new];_modelController.document=[PRTestDocument new];_modelController.drawingGuideController=[PRTestCheckpoint new];
+    _modelController.document.editingLayer=[PRTestEditingLayer new];
     _modelController.valkyrieController=[PRTestEngineController new];_modelController.valkyrieController.document=_modelController.document;
     _modelController.canvasView=[[UIView alloc]initWithFrame:CGRectMake(20,80,self.view.bounds.size.width-40,self.view.bounds.size.height-100)];
     _modelController.canvasView.backgroundColor=UIColor.whiteColor;_modelController.canvasView.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[self.view addSubview:_modelController.canvasView];
@@ -129,7 +142,15 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             [symmetry sendActionsForControlEvents:UIControlEventTouchUpInside];
             PRTestModel *model=((DocumentViewController *)self.window.rootViewController).modelController;
             if(!model.valkyrieController.enabled || !model.began || model.document.drawingGuide.type!=3 || !model.document.drawingGuide.updated || !model.drawingGuideController.finished || !model.refreshed)[failures addObject:@"Native symmetry bridge did not create/enable a guide and execute its validated selector sequence"];
-            if([[layer valueForKey:@"guideVisible"] boolValue])[failures addObject:@"Ruler remains active over the native symmetry editor"];
+            UISegmentedControl *modes=(UISegmentedControl *)findIdentifier(layer,@"procreate-rulers-symmetry-modes");
+            if(modes.hidden || modes.numberOfSegments!=4)[failures addObject:@"Sketchbook-style quick symmetry choices are unavailable"];
+            for(NSInteger i=0;i<4;i++) {
+                modes.selectedSegmentIndex=i;[modes sendActionsForControlEvents:UIControlEventValueChanged];
+                if(model.document.drawingGuide.symmetryType!=i || !model.document.editingLayer.drawingGuideAssisted)[failures addObject:@"Symmetry mode did not commit native assisted drawing"];
+            }
+            UIButton *off=(UIButton *)findIdentifier(layer,@"procreate-rulers-symmetry-off");[off sendActionsForControlEvents:UIControlEventTouchUpInside];
+            if(model.valkyrieController.enabled || model.document.editingLayer.drawingGuideAssisted)[failures addObject:@"Symmetry off did not disable guide and assistance"];
+            if([[layer valueForKey:@"guideVisible"] boolValue])[ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             if([[layer valueForKey:@"guideVisible"] boolValue])[failures addObject:@"Ruler cannot be dismissed"];

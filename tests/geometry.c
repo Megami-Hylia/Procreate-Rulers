@@ -24,5 +24,9 @@ int main(void) {
     }
     q=(PRPoint){-25,360};pr_move_handle(&g,1,q);p=pr_handle(1,g);near(p.x,q.x);near(p.y,q.y);
     PRPoint old=g.points[1];pr_move_handle(&g,4,(PRPoint){20,30});near(g.points[1].x,old.x);near(g.center.x,20);
+    near(pr_snap_angle(M_PI/180),0);near(pr_snap_angle(M_PI/2+.01),M_PI/2);near(pr_snap_angle(.2),.2);
+    g.angle=.6;g.radius=700;g=pr_fit_guide(g,1024,768);
+    for(int i=0;i<4;i++){p=pr_handle(i,g);assert(p.x>=0 && p.x<=1024 && p.y>=0 && p.y<=768);}
+    near(g.points[1].x,old.x);
     puts("Straight/flexible ruler projection and editable curve tests passed");
 }

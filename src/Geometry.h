@@ -55,3 +55,18 @@ static inline PRPoint pr_project(PRPoint world,PRGuide g) {
     for(int i=0;i<2;i++){PRPoint end=pr_curve(i,g);if(pr_distance2(q,end)<pr_distance2(q,p))p=end;}
     return pr_world(p,g);
 }
+static inline double pr_snap_angle(double angle) {
+    double cardinal=round(angle/(M_PI/2))*(M_PI/2);
+    return fabs(angle-cardinal)<3*M_PI/180 ? cardinal : angle;
+}
+static inline PRGuide pr_fit_guide(PRGuide g,double width,double height) {
+    PRGuide unit=g;unit.center=(PRPoint){0,0};unit.radius=1;
+    double minX=INFINITY,minY=INFINITY,maxX=-INFINITY,maxY=-INFINITY;
+    for(int i=0;i<4;i++) {
+        PRPoint p=pr_handle(i,unit);minX=fmin(minX,p.x);maxX=fmax(maxX,p.x);minY=fmin(minY,p.y);maxY=fmax(maxY,p.y);
+    }
+    g.radius=fmin(width*.65/fmax(.1,maxX-minX),height*.45/fmax(.1,maxY-minY));
+    g.radius=fmax(1,fmin(500,g.radius));
+    g.center=(PRPoint){width/2-g.radius*(minX+maxX)/2,height*.6-g.radius*(minY+maxY)/2};
+    return g;
+}
