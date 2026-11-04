@@ -262,6 +262,7 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             ValkyrieStrokeSegmentPoint *last=sparse.lastObject;last.index=5;
             if([input constrainedControlPoints:sparse initialLocationInView:CGPointZero]!=sparse)[failures addObject:@"Unsupported native index gaps were expanded unsafely"];
             last.index=1;
+            if([[layer valueForKey:@"nativeSamples"] unsignedIntegerValue]<60)[failures addObject:@"Native projection counter did not observe the real hooked entry point"];
             ValkyrieStrokeOptions *settings=[ValkyrieStrokeOptions new];settings.marker=42;
             [engine paintBegan:rawBatch options:settings];
             if(engine.valkyrieStrokeOptions==settings || engine.valkyrieStrokeOptions.marker!=42)[failures addObject:@"Ruler stroke did not get an isolated native-options snapshot"];
@@ -318,7 +319,6 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             if([unrelated constrainedControlPoints:rawBatch initialLocationInView:CGPointZero]!=rawBatch)[failures addObject:@"Ruler altered an unrelated document pipeline"];
             [unrelated.valkyrieController paintBegan:rawBatch options:settings];
             if(unrelated.valkyrieController.valkyrieStrokeOptions!=settings)[failures addObject:@"Ruler tagged another document's rendering options"];
-            if([[layer valueForKey:@"nativeSamples"] unsignedIntegerValue]<60)[failures addObject:@"Native projection counter did not observe the real hooked entry point"];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             if([input constrainedControlPoints:rawBatch initialLocationInView:CGPointZero]!=rawBatch)[failures addObject:@"Disabling the ruler failed to restore the original native samples"];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
