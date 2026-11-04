@@ -6,10 +6,10 @@ typedef struct {
     PRPoint center;
     double angle, radius;
     PRKind kind;
-    PRPoint points[4]; // Cubic endpoints/control handles, normalized by radius.
+    PRPoint points[3]; // Start, bend point on the curve, end; normalized by radius.
 } PRGuide;
 static inline PRGuide pr_default_guide(PRPoint center) {
-    return (PRGuide){center,0,180,PRLine,{{-1,0},{-.4,-.8},{.4,-.8},{1,0}}};
+    return (PRGuide){center,0,180,PRLine,{{-1,0},{0,.75},{1,0}}};
 }
 static inline PRPoint pr_local(PRPoint p, PRGuide g) {
     double x=p.x-g.center.x,y=p.y-g.center.y,c=cos(g.angle),s=sin(g.angle);
@@ -22,19 +22,27 @@ static inline PRPoint pr_world(PRPoint p, PRGuide g) {
 static inline double pr_distance2(PRPoint a,PRPoint b) {
     return (a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y);
 }
+static inline PRPoint pr_curve_control(PRGuide g) {
+    return (PRPoint){2*g.points[1].x-(g.points[0].x+g.points[2].x)/2,2*g.points[1].y-(g.points[0].y+g.points[2].y)/2};
+}
 static inline PRPoint pr_curve(double t,PRGuide g) {
-    double u=1-t,w[4]={u*u*u,3*u*u*t,3*u*t*t,t*t*t};
-    PRPoint p={0,0};
-    for(int i=0;i<4;i++){p.x+=w[i]*g.points[i].x*g.radius;p.y+=w[i]*g.points[i].y*g.radius;}
-    return p;
+    double u=1-t;PRPoint c=pr_curve_control(g);
+    return (PRPoint){g.radius*(u*u*g.points[0].x+2*u*t*c.x+t*t*g.points[2].x),g.radius*(u*u*g.points[0].y+2*u*t*c.y+t*t*g.points[2].y)};
 }
 static inline PRPoint pr_handle(int index,PRGuide g) {
     if(index==4)return g.center;
+    if(g.kind==PRLine)return pr_world((PRPoint){index==0?-g.radius:g.radius,0},g);
     return pr_world((PRPoint){g.points[index].x*g.radius,g.points[index].y*g.radius},g);
 }
 static inline void pr_move_handle(PRGuide *g,int index,PRPoint world) {
     if(index==4){g->center=world;return;}
-    if(index<0 || index>3)return;
+    if(index<0 || index>2)return;
+    if(g->kind==PRLine){
+        PRPoint opposite=pr_handle(index==0?2:0,*g);
+        PRPoint first=index==0?world:opposite,last=index==0?opposite:world;
+        double length=hypot(last.x-first.x,last.y-first.y);if(length<2)return;
+        g->center=(PRPoint){(first.x+last.x)/2,(first.y+last.y)/2};g->radius=length/2;g->angle=atan2(last.y-first.y,last.x-first.x);return;
+    }
     PRPoint local=pr_local(world,*g);double radius=fmax(1,g->radius);
     g->points[index]=(PRPoint){local.x/radius,local.y/radius};
 }
@@ -62,8 +70,17 @@ static inline double pr_snap_angle(double angle) {
 static inline PRGuide pr_fit_guide(PRGuide g,double width,double height) {
     PRGuide unit=g;unit.center=(PRPoint){0,0};unit.radius=1;
     double minX=INFINITY,minY=INFINITY,maxX=-INFINITY,maxY=-INFINITY;
-    for(int i=0;i<4;i++) {
-        PRPoint p=pr_handle(i,unit);minX=fmin(minX,p.x);maxX=fmax(maxX,p.x);minY=fmin(minY,p.y);maxY=fmax(maxY,p.y);
+    double candidates[5]={0,.5,1,-1,-1};
+    if(g.kind==PRFlexible){
+        PRPoint a=pr_handle(0,unit),b=pr_handle(2,unit),c=pr_world(pr_curve_control(unit),unit);
+        double dx=a.x-2*c.x+b.x,dy=a.y-2*c.y+b.y;
+        if(fabs(dx)>1e-12)candidates[3]=(a.x-c.x)/dx;
+        if(fabs(dy)>1e-12)candidates[4]=(a.y-c.y)/dy;
+    }
+    for(int i=0;i<5;i++){
+        double t=candidates[i];if(t<0 || t>1)continue;
+        PRPoint p=g.kind==PRLine?pr_world((PRPoint){2*t-1,0},unit):pr_world(pr_curve(t,unit),unit);
+        minX=fmin(minX,p.x);maxX=fmax(maxX,p.x);minY=fmin(minY,p.y);maxY=fmax(maxY,p.y);
     }
     g.radius=fmin(width*.65/fmax(.1,maxX-minX),height*.45/fmax(.1,maxY-minY));
     g.radius=fmax(1,fmin(500,g.radius));

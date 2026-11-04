@@ -2,20 +2,20 @@
 // This verifies our UI/lifecycle, NOT compatibility with the real Procreate engine.
 #import <UIKit/UIKit.h>
 #import "../src/Geometry.h"
-extern CGPoint PRTestProjectLocation(UITouch *touch,UIView *view,CGPoint raw);
 @protocol PRTestLayerAccess
 - (PRGuide)guide;
 - (void)moveHandleAtIndex:(NSInteger)index toPoint:(CGPoint)point;
 @end
-@interface PRTestTouch : UITouch
-@property(nonatomic,strong) UIView *testView;
+@interface ValkyrieStrokeSegmentPoint : NSObject <NSCopying>
+@property(nonatomic) CGPoint location;
+@property(nonatomic) double pressure,altitude,azimuth,timeInterval;
+@property(nonatomic) BOOL predicted;
 @end
-@implementation PRTestTouch
-- (UIView *)view {return _testView;}
-- (UIWindow *)window {return _testView.window;}
-- (UITouchType)type {return UITouchTypePencil;}
+@implementation ValkyrieStrokeSegmentPoint
+- (id)copyWithZone:(NSZone *)zone {
+    ValkyrieStrokeSegmentPoint *p=[ValkyrieStrokeSegmentPoint new];p.location=_location;p.pressure=_pressure;p.altitude=_altitude;p.azimuth=_azimuth;p.timeInterval=_timeInterval;p.predicted=_predicted;return p;
+}
 @end
-
 @interface ValkyrieDrawingGuide : NSObject
 @property(nonatomic) NSUInteger type;
 @property(nonatomic) NSInteger symmetryType;
@@ -39,14 +39,29 @@ extern CGPoint PRTestProjectLocation(UITouch *touch,UIView *view,CGPoint raw);
 @interface PRTestEngineController : NSObject
 @property(nonatomic,strong) PRTestDocument *document;
 @property(nonatomic) BOOL enabled;
+@property(nonatomic,strong) UIView *valkyrieView;
+@property(nonatomic) CGAffineTransform documentToView;
+- (CGPoint)viewPointFromValkyriePoint:(CGPoint)point;
+- (CGPoint)valkyriePointFromViewPoint:(CGPoint)point;
 - (void)drawingGuideEnabled:(BOOL)enabled;
 - (void)drawingGuideTypeChanged:(NSInteger)type;
 - (void)drawingGuideSymmetryTypeChanged:(NSInteger)type;
 @end
 @implementation PRTestEngineController
+- (CGPoint)viewPointFromValkyriePoint:(CGPoint)p {return CGPointApplyAffineTransform(p,_documentToView);}
+- (CGPoint)valkyriePointFromViewPoint:(CGPoint)p {return CGPointApplyAffineTransform(p,CGAffineTransformInvert(_documentToView));}
 - (void)drawingGuideEnabled:(BOOL)enabled {_enabled=enabled;if(!_document.drawingGuide)_document.drawingGuide=[ValkyrieDrawingGuide new];}
 - (void)drawingGuideTypeChanged:(NSInteger)type {_document.drawingGuide.type=type;[_document.drawingGuide updateSegments];}
 - (void)drawingGuideSymmetryTypeChanged:(NSInteger)type {_document.drawingGuide.symmetryType=type;}
+@end
+// Exact native entry-point ABI; its original implementation deliberately does no snapping.
+@interface DocumentValkyrieViewController : NSObject
+@property(nonatomic,strong) PRTestEngineController *valkyrieController;
+@property(nonatomic) NSUInteger originalCalls;
+- (NSArray *)constrainedControlPoints:(NSArray *)points initialLocationInView:(CGPoint)initial;
+@end
+@implementation DocumentValkyrieViewController
+- (NSArray *)constrainedControlPoints:(NSArray *)points initialLocationInView:(CGPoint)initial {_originalCalls++;return points;}
 @end
 @interface PRTestCheckpoint : NSObject
 @property(nonatomic) NSInteger startedType;
@@ -84,6 +99,8 @@ extern CGPoint PRTestProjectLocation(UITouch *touch,UIView *view,CGPoint raw);
     _modelController.document.editingLayer=[PRTestEditingLayer new];
     _modelController.valkyrieController=[PRTestEngineController new];_modelController.valkyrieController.document=_modelController.document;
     _modelController.canvasView=[[UIView alloc]initWithFrame:CGRectMake(20,80,self.view.bounds.size.width-40,self.view.bounds.size.height-100)];
+    _modelController.valkyrieController.documentToView=CGAffineTransformConcat(CGAffineTransformMakeScale(1.7,1.7),CGAffineTransformConcat(CGAffineTransformMakeRotation(.3),CGAffineTransformMakeTranslation(70,40)));
+    _modelController.valkyrieController.valkyrieView=[[UIView alloc]initWithFrame:_modelController.canvasView.bounds];[_modelController.canvasView addSubview:_modelController.valkyrieController.valkyrieView];
     _modelController.canvasView.backgroundColor=UIColor.whiteColor;_modelController.canvasView.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[self.view addSubview:_modelController.canvasView];
     UIView *bar=[[UIView alloc]initWithFrame:CGRectMake(0,24,self.view.bounds.size.width,48)];bar.backgroundColor=[UIColor colorWithWhite:.14 alpha:1];bar.autoresizingMask=UIViewAutoresizingFlexibleWidth;[self.view addSubview:bar];
     NSArray *titles=@[@"Gallery",@"Actions",@"Adjust",@"Select",@"Transform"];
@@ -124,21 +141,41 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             UISegmentedControl *kinds=(UISegmentedControl *)findIdentifier(layer,@"procreate-rulers-kind");
             if(kinds.numberOfSegments!=2 || ![[kinds titleForSegmentAtIndex:0] isEqualToString:@"Dritto"] || ![[kinds titleForSegmentAtIndex:1] isEqualToString:@"Flessibile"])[failures addObject:@"Ruler choices are not Dritto/Flessibile"];
             UIView *canvas=((DocumentViewController *)self.window.rootViewController).modelController.canvasView;
-            PRTestTouch *touch=[PRTestTouch new];touch.testView=canvas;
-            CGPoint raw=CGPointMake(40,60),point=PRTestProjectLocation(touch,canvas,raw);
-            CGPoint projected=[canvas convertPoint:point toView:layer];PRGuide guide=[(id<PRTestLayerAccess>)layer guide];
-            if(fabs(projected.y-guide.center.y)>.001 || ![[layer valueForKey:@"snap"] boolValue])[failures addObject:@"Straight ruler does not constrain Pencil coordinates automatically"];
-            kinds.selectedSegmentIndex=1;[kinds sendActionsForControlEvents:UIControlEventValueChanged];
-            [(id<PRTestLayerAccess>)layer moveHandleAtIndex:1 toPoint:CGPointMake(guide.center.x-80,guide.center.y-120)];
-            [(id<PRTestLayerAccess>)layer moveHandleAtIndex:2 toPoint:CGPointMake(guide.center.x+80,guide.center.y+90)];
-            guide=[(id<PRTestLayerAccess>)layer guide];
-            if(guide.kind!=PRFlexible || fabs(pr_handle(2,guide).y-guide.center.y-90)>.001)[failures addObject:@"Flexible ruler control handles cannot reshape the curve"];
-            for(int i=0;i<30;i++) {
-                raw=CGPointMake(i*12,70+i*4);point=PRTestProjectLocation(touch,canvas,raw);projected=[canvas convertPoint:point toView:layer];
-                double nearest=INFINITY;
-                for(int j=0;j<=5000;j++)nearest=fmin(nearest,pr_distance2((PRPoint){projected.x,projected.y},pr_world(pr_curve(j/5000.,guide),guide)));
-                if(nearest>.01){[failures addObject:@"Pencil coordinates leave the editable curve"];break;}
+            PRTestModel *boundModel=((DocumentViewController *)self.window.rootViewController).modelController;
+            PRTestEngineController *engine=boundModel.valkyrieController;
+            DocumentValkyrieViewController *input=[DocumentValkyrieViewController new];input.valkyrieController=engine;
+            PRGuide guide=[(id<PRTestLayerAccess>)layer guide];
+            NSMutableArray *rawBatch=[NSMutableArray array];
+            for(int i=0;i<30;i++){
+                ValkyrieStrokeSegmentPoint *point=[ValkyrieStrokeSegmentPoint new];
+                CGPoint screen=CGPointMake(guide.center.x-160+i*10,guide.center.y+sin(i)*45+50);
+                point.location=[engine valkyriePointFromViewPoint:[layer convertPoint:screen toView:canvas]];
+                point.pressure=.2+i*.02;point.altitude=.8;point.azimuth=.4;point.timeInterval=i*.004;point.predicted=i>=25;[rawBatch addObject:point];
             }
+            NSArray *nativeResult=[input constrainedControlPoints:rawBatch initialLocationInView:CGPointZero];
+            if(input.originalCalls!=1 || nativeResult==rawBatch || nativeResult.count!=rawBatch.count)[failures addObject:@"Native runtime hook was not invoked around the original method"];
+            for(NSUInteger i=0;i<nativeResult.count;i++){
+                ValkyrieStrokeSegmentPoint *before=rawBatch[i],*after=nativeResult[i];
+                CGPoint screen=[canvas convertPoint:[engine viewPointFromValkyriePoint:after.location] toView:layer];
+                if(fabs(screen.y-guide.center.y)>.001){[failures addObject:@"Native committed/predicted samples escape the straight guide after pan/zoom/rotation"];break;}
+                if(before==after || before.pressure!=after.pressure || before.altitude!=after.altitude || before.azimuth!=after.azimuth || before.timeInterval!=after.timeInterval || before.predicted!=after.predicted)[failures addObject:@"Projection mutated input samples or lost stylus attributes"];
+            }
+            kinds.selectedSegmentIndex=1;[kinds sendActionsForControlEvents:UIControlEventValueChanged];
+            [(id<PRTestLayerAccess>)layer moveHandleAtIndex:1 toPoint:CGPointMake(guide.center.x+20,guide.center.y+150)];
+            guide=[(id<PRTestLayerAccess>)layer guide];PRPoint middle=pr_world(pr_curve(.5,guide),guide);
+            if(fabs(middle.x-guide.center.x-20)>.001 || fabs(middle.y-guide.center.y-150)>.001)[failures addObject:@"Middle handle is not on the flexible ruler's curve"];
+            nativeResult=[input constrainedControlPoints:rawBatch initialLocationInView:CGPointZero];
+            for(ValkyrieStrokeSegmentPoint *sample in nativeResult){
+                CGPoint screen=[canvas convertPoint:[engine viewPointFromValkyriePoint:sample.location] toView:layer];double nearest=INFINITY;
+                for(int j=0;j<=10000;j++)nearest=fmin(nearest,pr_distance2((PRPoint){screen.x,screen.y},pr_world(pr_curve(j/10000.,guide),guide)));
+                if(nearest>.01){[failures addObject:@"Native samples escape the edited flexible guide"];break;}
+            }
+            DocumentValkyrieViewController *unrelated=[DocumentValkyrieViewController new];unrelated.valkyrieController=[PRTestEngineController new];
+            if([unrelated constrainedControlPoints:rawBatch initialLocationInView:CGPointZero]!=rawBatch)[failures addObject:@"Ruler altered an unrelated document pipeline"];
+            if([[layer valueForKey:@"nativeSamples"] unsignedIntegerValue]<60)[failures addObject:@"Native projection counter did not observe the real hooked entry point"];
+            [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
+            if([input constrainedControlPoints:rawBatch initialLocationInView:CGPointZero]!=rawBatch)[failures addObject:@"Disabling the ruler failed to restore the original native samples"];
+            [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
             [symmetry sendActionsForControlEvents:UIControlEventTouchUpInside];
             PRTestModel *model=((DocumentViewController *)self.window.rootViewController).modelController;
             if(!model.valkyrieController.enabled || !model.began || model.document.drawingGuide.type!=3 || !model.document.drawingGuide.updated || !model.drawingGuideController.finished || !model.refreshed)[failures addObject:@"Native symmetry bridge did not create/enable a guide and execute its validated selector sequence"];
@@ -156,7 +193,7 @@ static UIView *findIdentifier(UIView *view,NSString *identifier) {
             if([[layer valueForKey:@"guideVisible"] boolValue])[failures addObject:@"Ruler cannot be dismissed"];
             [ruler sendActionsForControlEvents:UIControlEventTouchUpInside];
         }
-        NSDictionary *result=@{@"passed":@(failures.count==0),@"failures":failures,@"scope":@"UIKit toolbar, automatic canvas binding, straight/reshaped cubic Pencil coordinate projection, legacy windows and native symmetry test doubles; real Procreate not executed"};
+        NSDictionary *result=@{@"passed":@(failures.count==0),@"failures":failures,@"scope":@"Real Objective-C runtime hook around native paint-batch test double; pan/zoom/rotation transforms; committed/predicted point copies and stylus metadata; 3 on-curve handles; unrelated document and disabled passthrough; real Procreate binary not executed"};
         NSString *path=[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"toolbar-test.json"];
         [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil] writeToFile:path atomically:YES];
     }];

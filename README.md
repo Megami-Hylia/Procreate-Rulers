@@ -1,25 +1,25 @@
 # Procreate Rulers
 
-Experimental original iPad extension, with ruler interactions recreated from analysis of an operator-supplied Sketchbook IPA and its official documentation. No proprietary executable, image asset or recovered function body is included.
+Experimental original extension for the supplied Procreate 5.4.8/build 57066 IPA. The v5 correction follows a reference video showing that earlier visible guides did not constrain actual painting. See [the failure and verified native call path](docs/Video-correction.md).
 
-## Drawing tools
+## Rulers
 
-Two toolbar buttons appear after Procreate's Transform control.
+The toolbar's Righello button opens two choices: Dritto and Flessibile. Native painting samples are constrained to the displayed path through Procreate's own coordinate conversions. The extension no longer intercepts UIKit UITouch methods or relies on selecting a guessed input view. The visible status counts native control points actually projected. If it remains zero while painting, the real-app path still needs diagnosis; a visible guide alone is not proof of a working constraint.
 
-**Righello** offers Dritto and Flessibile. Apple Pencil coordinate queries are projected onto the displayed line or editable cubic curve. The native canvas is bound automatically when possible; Scegli tela selects it manually. Press the toolbar icon again to return to free drawing.
+The normal ruler has two endpoint handles to pivot/resize it. The flexible ruler has three handles directly on its curve: two ends and a bend point. Drag any point to reshape it; drag the translucent body to move the whole guide. Two fingers rotate/pinch-scale it, with cardinal-angle snapping. Double-tap its body to reset, or a flexible handle to fit the current curve into the view. Blocca disables finger manipulation. Press the toolbar icon again for free drawing.
 
-Drag one finger along the ruler or its center to move it. Use two fingers over the ruler to rotate/pinch-scale it; rotation snaps within 3 degrees of a cardinal angle. Double-tap its body to reset; double-tap a flexible-ruler handle to fit the current shape into view. Four handles reshape the flexible curve. Blocca disables ruler manipulation until Sblocca is pressed. Angle and size sliders are also available.
+The interface uses a compact selector and neutral translucent ruler bodies, matching the interaction shown in the reference rather than an external cubic editing scaffold.
 
-**Simmetria** opens direct Verticale, Orizzontale, Entrambi and Radiale choices. Selection calls Procreate's native guide engine and commits assisted drawing to the current layer. Modifica assi opens the original guide editor; Disattiva disables the guide and current-layer assistance. Ruler and native symmetry may remain active together, but the combined real-app pipeline is unverified.
+## Symmetry
 
-## Known limits
+The second toolbar button offers Verticale, Orizzontale, Entrambi and Radiale through Procreate's native guide engine. Selection activates assisted drawing on the current layer. Modifica assi opens the original editor. Disattiva switches the guide and current-layer assistance off. Radial remains Procreate's native 8-sector mode; Sketchbook's adjustable 16-sector mode, stop-at-center and separate symmetry lock/show controls are not reproduced.
 
-Experimental and not device-tested. A successful build/harness test does not prove compatibility with Procreate's input/rendering pipeline. If it bypasses the intercepted UITouch methods, constraint will not act. Finger painting is unconstrained. Rulers remain fixed on the screen and must be repositioned after canvas pan/zoom/rotation; their parameters are not saved with projects. Native export and undo behavior require device checks. Avoid self-crossing curves where nearest-point projection can switch branches.
+## Validation boundaries
 
-Symmetry uses Procreate's native 8-sector radial mode. Sketchbook's 16-sector slider, stop-at-center and separate symmetry lock/show controls are not implemented. See [analysis and evidence boundaries](docs/Sketchbook-analysis.md).
+GitHub Actions compiles an ARM64 dylib with the iPhoneOS SDK, runs C geometry and Python packaging tests, and runs a UIKit iPad harness. The production Objective-C method hook is exercised through an exact-ABI native-input test double, not through a standalone projection helper. The harness checks pan/zoom/rotation conversion, copied pressure/tilt/timestamps, committed/predicted samples and passthrough when disabled or used by unrelated documents. It does not run real Procreate. Device input/rendering and downstream smoothing remain unverified.
+
+Guides remain fixed to the screen during canvas pan/zoom/rotation and their settings are not saved in projects. Save copies of drawings before testing.
 
 ## Build and package
 
-GitHub Actions uses macOS/iPhoneOS SDK to compile an ARM64 dylib. Tests cover C geometry, Python IPA packaging, and a UIKit iPad simulator harness with explicit Procreate-engine test doubles. The simulator does not execute real Procreate or Sketchbook. Artifacts include the dylib and labeled harness screenshot/results.
-
-On macOS: `bash scripts/build.sh`. Package locally: `python scripts/package_ipa.py ORIGINAL.ipa ProcreateRulers.dylib NEW.ipa`. Only the exact previously analyzed Procreate 5.4.8 build 57066 executable is accepted. The original IPA is never overwritten; the resulting IPA requires signing (for example with Sideloadly). Keep copies of drawings before testing. Proprietary IPAs must remain outside the public repository and Actions artifacts.
+On macOS: `bash scripts/build.sh`. Package locally with `python scripts/package_ipa.py ORIGINAL.ipa ProcreateRulers.dylib NEW.ipa`. The original is never overwritten. The exact analyzed Procreate executable digest is required. Sign the resulting IPA with the user's normal Sideloadly setup. No proprietary IPA, resource or credential is published in this repository or its Actions artifacts.
